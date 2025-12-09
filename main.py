@@ -1,5 +1,4 @@
-def main():
-    print("Hello from trading!")
+from trading.main import main
 
 
 if __name__ == "__main__":
