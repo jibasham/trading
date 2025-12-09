@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from trading.types import Bar, NormalizedBar, Symbol
+from trading.types import Bar, DateRange, DatasetId, NormalizedBar, RunId, Symbol
 
 
 def test_bar_creation_and_attributes() -> None:
@@ -23,3 +23,22 @@ def test_normalized_bar_is_subclass_of_bar() -> None:
     assert isinstance(nbar, Bar)
     assert nbar.symbol == Symbol("QQQ")
     assert nbar.timestamp == ts
+
+
+def test_identifier_newtypes_wrap_strings() -> None:
+    ds_id = DatasetId("local:qqq_5m_2020_2024")
+    run_id = RunId("run-001")
+
+    assert isinstance(ds_id, str)
+    assert isinstance(run_id, str)
+    assert ds_id == "local:qqq_5m_2020_2024"
+    assert run_id == "run-001"
+
+
+def test_date_range_holds_start_and_end() -> None:
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    dr = DateRange(start=start, end=end)
+
+    assert dr.start == start
+    assert dr.end == end

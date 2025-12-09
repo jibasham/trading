@@ -6,6 +6,16 @@ from typing import NewType
 
 
 Symbol = NewType("Symbol", str)
+DatasetId = NewType("DatasetId", str)
+RunId = NewType("RunId", str)
+
+
+@dataclass(slots=True)
+class DateRange:
+    """Inclusive start, exclusive end range for time-bounded queries."""
+
+    start: datetime
+    end: datetime
 
 
 @dataclass(slots=True)
