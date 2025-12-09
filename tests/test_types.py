@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from trading.types import Bar, DateRange, DatasetId, NormalizedBar, RunId, Symbol
+from trading.types import Bar, DateRange, DatasetId, NormalizedBar, RunId, RunMetrics, Symbol
 
 
 def test_bar_creation_and_attributes() -> None:
@@ -42,3 +42,23 @@ def test_date_range_holds_start_and_end() -> None:
 
     assert dr.start == start
     assert dr.end == end
+
+
+def test_run_metrics_dataclass_fields() -> None:
+    metrics = RunMetrics(
+        run_id=RunId("run-123"),
+        total_return=0.10,
+        max_drawdown=0.05,
+        volatility=0.02,
+        sharpe_ratio=1.5,
+        num_trades=42,
+        win_rate=0.6,
+    )
+
+    assert metrics.run_id == RunId("run-123")
+    assert metrics.total_return == 0.10
+    assert metrics.max_drawdown == 0.05
+    assert metrics.volatility == 0.02
+    assert metrics.sharpe_ratio == 1.5
+    assert metrics.num_trades == 42
+    assert metrics.win_rate == 0.6

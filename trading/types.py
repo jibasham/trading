@@ -46,3 +46,20 @@ class NormalizedBar(Bar):
 
     # Additional normalized fields can be added here later.
     pass
+
+
+@dataclass(slots=True)
+class RunMetrics:
+    """Summary metrics for a single training or simulation run.
+
+    These are computed at the end of a run and can be extended over time
+    as new metrics are needed.
+    """
+
+    run_id: RunId
+    total_return: float
+    max_drawdown: float
+    volatility: float
+    sharpe_ratio: float | None
+    num_trades: int
+    win_rate: float | None
