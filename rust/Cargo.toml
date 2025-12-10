@@ -1,0 +1,20 @@
+[package]
+name = "trading-core"
+version = "0.1.0"
+edition = "2021"
+authors = []
+license = "MIT OR Apache-2.0"  # Private project, but good practice
+repository = ""  # Private - no repo
+
+[lib]
+name = "trading_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+
+[build-dependencies]
+pyo3-build-config = "0.21"
