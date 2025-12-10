@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 /// This module provides core functionality that can be called from Python
 
 #[pymodule]
-fn trading_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core modules will be added here
     // For now, just a placeholder
     m.add_function(wrap_pyfunction!(hello_rust, m)?)?;

@@ -9,6 +9,7 @@ description = "Trading bot system with Rust core and Python strategies"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "maturin>=1.10.2",
     "pytest>=9.0.2",
     "pyyaml>=6.0.3",
 ]
@@ -28,5 +29,4 @@ testpaths = ["tests"]
 manifest-path = "rust/Cargo.toml"
 module-name = "trading._core"
 # Private project - no publishing needed
-compatibility = "linux"
 manylinux = "2014"
