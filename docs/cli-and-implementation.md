@@ -1,16 +1,28 @@
-# CLI and Implementation Specification
+# CLI and Implementation Specificationpip 
 
 This document provides a complete, function-by-function specification for implementing the trading bot system. Each function is designed to be implementable by a low-parameter-count AI agent working in isolation, given the type definitions and context provided here.
 
 ## 1. Design Principles for Implementation
 
-- **Library first, CLI second**: Core behavior lives in a Python library; the CLI is a thin wrapper.
-- **Small work items**: Implementation is decomposed into very small steps; ideally, each work item corresponds to implementing or modifying a **single function**.
-- **Clear responsibilities**: Each function should have a single clear responsibility with well-defined inputs and outputs.
-- **Config-driven behavior**: CLI commands largely translate configuration files and arguments into calls into the library.
-- **Type safety**: All functions use Python type hints. Types are defined in `trading.types` module using Pydantic models for validation and serialization.
-- **Error handling**: Functions raise domain-specific exceptions (defined in `trading.exceptions`) rather than generic exceptions.
+**Hybrid Architecture**: This project uses Rust for performance-critical components and Python for flexibility and ML/RL integration.
+
+- **Library first, CLI second**: Core behavior lives in Rust/Python library; the CLI is a thin Python wrapper
+- **Small work items**: Implementation is decomposed into very small steps; ideally, each work item corresponds to implementing or modifying a **single function**
+- **Clear responsibilities**: Each function should have a single clear responsibility with well-defined inputs and outputs
+- **Config-driven behavior**: CLI commands largely translate configuration files and arguments into calls into the library
+- **Type safety**: 
+  - **Python**: Type hints with Pydantic models for validation and serialization
+  - **Rust**: Strong type system with serde for serialization, PyO3 for Python bindings
+- **Error handling**: 
+  - **Python**: Domain-specific exceptions (defined in `trading.exceptions`)
+  - **Rust**: Result types with custom error types, converted to Python exceptions via PyO3
 - **Storage design**: Local datasets are stored in `~/.trading/datasets/` directory. Run artifacts are stored in `~/.trading/runs/` directory. Metadata is stored as JSON files alongside data.
+
+**Language Assignment**:
+- **[RUST]**: Data processing (normalization, validation, resampling), storage (Parquet I/O), account management, execution engine, metrics computation, business day calculations
+- **[PYTHON]**: Configuration parsing, data source integration (external APIs), strategy logic, CLI, event logging, training orchestration
+
+Each function specification below is marked with **[RUST]** or **[PYTHON]** to indicate implementation language.
 
 ## 2. Core Type Definitions
 
@@ -353,9 +365,9 @@ def load_fetch_data_config(config_path: str) -> FetchDataConfig:
 
 ---
 
-#### Function: `resolve_data_source`
+#### Function: `resolve_data_source` **[PYTHON]**
 
-**Location**: `trading/data/sources.py`
+**Location**: `src/trading/data/sources.py`
 
 **Signature**:
 ```python
@@ -391,9 +403,11 @@ def resolve_data_source(config: FetchDataConfig) -> DataSource:
 
 ---
 
-#### Function: `fetch_bars`
+#### Function: `fetch_bars` **[PYTHON]**
 
-**Location**: `trading/data/sources.py` (as method of DataSource implementations)
+**Location**: `src/trading/data/sources.py` (as method of DataSource implementations)
+
+**Note**: External API integration (yfinance, etc.) stays in Python for flexibility. High-volume data processing can call Rust functions.
 
 **Signature**:
 ```python
@@ -441,9 +455,14 @@ def fetch_bars(
 
 ---
 
-#### Function: `normalize_bars`
+#### Function: `normalize_bars` **[RUST]**
 
-**Location**: `trading/data/normalize.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.normalize_bars`)
+
+**Rust Implementation Notes**:
+- Use PyO3 to accept Python iterator of Bar objects
+- Convert to Rust structs, normalize, yield back as Python objects
+- Use `PyIterator` and `PyResult` for Python interop
 
 **Signature**:
 ```python
@@ -479,9 +498,14 @@ def normalize_bars(raw_bars: Iterator[Bar]) -> Iterator[NormalizedBar]:
 
 ---
 
-#### Function: `validate_bars`
+#### Function: `validate_bars` **[RUST]**
 
-**Location**: `trading/data/validate.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.validate_bars`)
+
+**Rust Implementation Notes**:
+- Accept Python iterator, validate in Rust for performance
+- Use Rust's iterator combinators for efficient validation
+- Yield validated bars back to Python
 
 **Signature**:
 ```python
@@ -517,9 +541,15 @@ def validate_bars(normalized_bars: Iterator[NormalizedBar]) -> Iterator[Normaliz
 
 ---
 
-#### Function: `store_dataset`
+#### Function: `store_dataset` **[RUST]**
 
-**Location**: `trading/data/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.store_dataset`)
+
+**Rust Implementation Notes**:
+- Use `polars` or `arrow` crate for Parquet I/O (high performance)
+- Accept Python iterator, collect into Rust Vec, write to Parquet
+- Use `serde_json` for metadata serialization
+- Create directories using `std::fs` or `walkdir` crate
 
 **Signature**:
 ```python
@@ -568,9 +598,11 @@ def store_dataset(
 
 ---
 
-#### Function: `run_fetch_data_command`
+#### Function: `run_fetch_data_command` **[PYTHON]**
 
-**Location**: `trading/commands/fetch_data.py`
+**Location**: `src/trading/commands/fetch_data.py`
+
+**Note**: Orchestrates Python config loading, Python data fetching, then calls Rust functions for normalization, validation, and storage.
 
 **Signature**:
 ```python
@@ -636,9 +668,9 @@ dataset_id: "synth_gb_2020_2024"  # Optional
 
 ### 5.3 Function Specifications
 
-#### Function: `load_gen_synth_config`
+#### Function: `load_gen_synth_config` **[PYTHON]**
 
-**Location**: `trading/commands/gen_synth.py`
+**Location**: `src/trading/commands/gen_synth.py`
 
 **Signature**:
 ```python
@@ -676,9 +708,11 @@ def load_gen_synth_config(config_path: str) -> GenSynthConfig:
 
 ---
 
-#### Function: `build_synth_generator`
+#### Function: `build_synth_generator` **[PYTHON]**
 
-**Location**: `trading/data/synthetic.py`
+**Location**: `src/trading/data/synthetic.py`
+
+**Note**: Generator construction stays in Python for flexibility. Actual generation can call Rust for performance.
 
 **Signature**:
 ```python
@@ -713,9 +747,15 @@ def build_synth_generator(config: GenSynthConfig) -> SynthGenerator:
 
 ---
 
-#### Function: `generate_synth_bars`
+#### Function: `generate_synth_bars` **[RUST]**
 
-**Location**: `trading/data/synthetic.py` (as method of SynthGenerator implementations)
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.generate_synth_bars`)
+
+**Rust Implementation Notes**:
+- Use `rand` crate for random number generation
+- Implement GBM and mean-reverting processes in Rust
+- Accept config from Python, return iterator of bars
+- Use `PyIterator` to yield bars to Python efficiently
 
 **Signature**:
 ```python
@@ -754,9 +794,11 @@ def generate_bars(self) -> Iterator[Bar]:
 
 ---
 
-#### Function: `normalize_synth_bars`
+#### Function: `normalize_synth_bars` **[RUST]**
 
-**Location**: `trading/data/normalize.py`
+**Location**: `rust/src/lib.rs` (reuses `normalize_bars` function)
+
+**Note**: Delegates to the same Rust `normalize_bars` function used for historical data.
 
 **Signature**:
 ```python
@@ -784,9 +826,11 @@ def normalize_synth_bars(raw_bars: Iterator[Bar]) -> Iterator[NormalizedBar]:
 
 ---
 
-#### Function: `store_synth_dataset`
+#### Function: `store_synth_dataset` **[RUST]**
 
-**Location**: `trading/data/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.store_synth_dataset`)
+
+**Note**: Extends `store_dataset` to include synthetic-specific metadata.
 
 **Signature**:
 ```python
@@ -832,9 +876,11 @@ def store_synth_dataset(
 
 ---
 
-#### Function: `run_gen_synth_command`
+#### Function: `run_gen_synth_command` **[PYTHON]**
 
-**Location**: `trading/commands/gen_synth.py`
+**Location**: `src/trading/commands/gen_synth.py`
+
+**Note**: Python orchestrator that calls Rust functions for generation and storage.
 
 **Signature**:
 ```python
@@ -900,9 +946,9 @@ logging:
 
 ### 6.3 Function Specifications
 
-#### Function: `load_training_config`
+#### Function: `load_training_config` **[PYTHON]**
 
-**Location**: `trading/commands/run_training.py`
+**Location**: `src/trading/commands/run_training.py`
 
 **Signature**:
 ```python
@@ -944,9 +990,15 @@ def load_training_config(config_path: str) -> TrainingConfig:
 
 ---
 
-#### Function: `load_datasets`
+#### Function: `load_datasets` **[RUST]**
 
-**Location**: `trading/data/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.load_datasets`)
+
+**Rust Implementation Notes**:
+- Use `polars` or `arrow` crate to read Parquet files efficiently
+- Build `DatasetBundle` structure in Rust
+- Implement efficient lookup methods (binary search for timestamps)
+- Return Python-wrapped DatasetBundle object via PyO3
 
 **Signature**:
 ```python
@@ -992,9 +1044,11 @@ def load_datasets(config: TrainingConfig) -> DatasetBundle:
 
 ---
 
-#### Function: `resolve_strategy_class`
+#### Function: `resolve_strategy_class` **[PYTHON]**
 
-**Location**: `trading/strategies/registry.py`
+**Location**: `src/trading/strategies/registry.py`
+
+**Note**: Strategy loading stays in Python for flexibility and ML/RL integration.
 
 **Signature**:
 ```python
@@ -1030,9 +1084,11 @@ def resolve_strategy_class(class_path: str) -> type[Strategy]:
 
 ---
 
-#### Function: `instantiate_strategy`
+#### Function: `instantiate_strategy` **[PYTHON]**
 
-**Location**: `trading/strategies/registry.py`
+**Location**: `src/trading/strategies/registry.py`
+
+**Note**: Strategy instantiation stays in Python.
 
 **Signature**:
 ```python
@@ -1064,9 +1120,14 @@ def instantiate_strategy(
 
 ---
 
-#### Function: `initialize_account`
+#### Function: `initialize_account` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.initialize_account`)
+
+**Rust Implementation Notes**:
+- Create Account struct in Rust
+- Use PyO3 to accept Python TrainingConfig, return Account
+- Account struct should be `#[derive(Serialize, Deserialize)]` for JSON storage
 
 **Signature**:
 ```python
@@ -1100,9 +1161,15 @@ def initialize_account(config: TrainingConfig) -> Account:
 
 ---
 
-#### Function: `iteration_schedule`
+#### Function: `iteration_schedule` **[RUST]**
 
-**Location**: `trading/training/scheduler.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.iteration_schedule`)
+
+**Rust Implementation Notes**:
+- Accept DatasetBundle from Rust, iterate efficiently
+- Use Rust iterators for performance
+- Yield TimeSlice objects to Python via PyIterator
+- Handle variable sampling rates efficiently in Rust
 
 **Signature**:
 ```python
@@ -1137,9 +1204,11 @@ def iteration_schedule(dataset_bundle: DatasetBundle) -> Iterator[TimeSlice]:
 
 ---
 
-#### Function: `build_analysis_snapshot`
+#### Function: `build_analysis_snapshot` **[PYTHON]**
 
-**Location**: `trading/training/snapshot.py`
+**Location**: `src/trading/training/snapshot.py`
+
+**Note**: Python wrapper that calls Rust DatasetBundle methods and combines with Python Account object.
 
 **Signature**:
 ```python
@@ -1197,9 +1266,11 @@ def build_analysis_snapshot(
 
 ---
 
-#### Function: `strategy_decide`
+#### Function: `strategy_decide` **[PYTHON]**
 
-**Location**: `trading/training/strategy_executor.py`
+**Location**: `src/trading/training/strategy_executor.py`
+
+**Note**: Strategy execution stays in Python for ML/RL flexibility.
 
 **Signature**:
 ```python
@@ -1237,9 +1308,15 @@ def strategy_decide(
 
 ---
 
-#### Function: `apply_risk_constraints`
+#### Function: `apply_risk_constraints` **[RUST]**
 
-**Location**: `trading/risk/constraints.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.apply_risk_constraints`)
+
+**Rust Implementation Notes**:
+- Accept Python list of OrderRequest, Account, TrainingConfig
+- Validate constraints efficiently in Rust
+- Return filtered list of OrderRequest to Python
+- Use PyO3 to convert between Python and Rust types
 
 **Signature**:
 ```python
@@ -1281,9 +1358,15 @@ def apply_risk_constraints(
 
 ---
 
-#### Function: `execute_orders`
+#### Function: `execute_orders` **[RUST]**
 
-**Location**: `trading/execution/simulator.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.execute_orders`)
+
+**Rust Implementation Notes**:
+- Accept list of Orders and TimeSlice from Python
+- Execute orders efficiently in Rust
+- Return list of Execution objects to Python
+- Use PyO3 for type conversions
 
 **Signature**:
 ```python
@@ -1331,9 +1414,15 @@ def execute_orders(
 
 ---
 
-#### Function: `update_account_from_executions`
+#### Function: `update_account_from_executions` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.update_account_from_executions`)
+
+**Rust Implementation Notes**:
+- Core account update logic in Rust for performance
+- Handle clearing, reservations, position updates
+- Use mutable reference to Account (or return new Account)
+- Call `process_clearing` internally
 
 **Signature**:
 ```python
@@ -1381,9 +1470,11 @@ def update_account_from_executions(
 
 ---
 
-#### Function: `record_training_step`
+#### Function: `record_training_step` **[PYTHON]**
 
-**Location**: `trading/training/recording.py`
+**Location**: `src/trading/training/recording.py`
+
+**Note**: Python wrapper that records state. Can call Rust functions for efficient data serialization if needed.
 
 **Signature**:
 ```python
@@ -1436,9 +1527,15 @@ def record_training_step(
 
 ---
 
-#### Function: `compute_run_metrics`
+#### Function: `compute_run_metrics` **[RUST]**
 
-**Location**: `trading/metrics/compute.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.compute_run_metrics`)
+
+**Rust Implementation Notes**:
+- Use `ndarray` or `polars` for efficient statistical calculations
+- Compute all metrics in Rust for performance
+- Return RunMetrics struct to Python via PyO3
+- Handle edge cases (empty runs, no trades) gracefully
 
 **Signature**:
 ```python
@@ -1475,9 +1572,14 @@ def compute_run_metrics(run_state: RunState) -> RunMetrics:
 
 ---
 
-#### Function: `store_run_results`
+#### Function: `store_run_results` **[RUST]**
 
-**Location**: `trading/training/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.store_run_results`)
+
+**Rust Implementation Notes**:
+- Use `serde_json` for JSON serialization
+- Write files using `std::fs` or `tokio::fs` for async (if needed)
+- Efficient serialization of large run_state objects
 
 **Signature**:
 ```python
@@ -1521,9 +1623,13 @@ def store_run_results(
 
 ---
 
-#### Function: `checkpoint_run_state`
+#### Function: `checkpoint_run_state` **[RUST]**
 
-**Location**: `trading/training/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.checkpoint_run_state`)
+
+**Rust Implementation Notes**:
+- Serialize RunState efficiently using serde
+- Write checkpoint files atomically (write to temp, then rename)
 
 **Signature**:
 ```python
@@ -1556,9 +1662,14 @@ def checkpoint_run_state(run_state: RunState) -> None:
 
 ---
 
-#### Function: `resume_training_run`
+#### Function: `resume_training_run` **[RUST]**
 
-**Location**: `trading/training/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.resume_training_run`)
+
+**Rust Implementation Notes**:
+- Read checkpoint JSON using serde_json
+- Deserialize to RunState struct
+- Return to Python via PyO3
 
 **Signature**:
 ```python
@@ -1591,9 +1702,11 @@ def resume_training_run(run_id: RunId) -> RunState:
 
 ---
 
-#### Function: `log_event`
+#### Function: `log_event` **[PYTHON]**
 
-**Location**: `trading/training/logging.py`
+**Location**: `src/trading/training/logging.py`
+
+**Note**: Event logging stays in Python for flexibility and integration with Python logging ecosystem.
 
 **Signature**:
 ```python
@@ -1630,9 +1743,11 @@ def log_event(event_type: str, data: dict[str, Any], run_id: RunId) -> None:
 
 ---
 
-#### Function: `get_run_progress`
+#### Function: `get_run_progress` **[PYTHON]**
 
-**Location**: `trading/training/monitoring.py`
+**Location**: `src/trading/training/monitoring.py`
+
+**Note**: Python wrapper that queries RunState. Can call Rust for efficient calculations if needed.
 
 **Signature**:
 ```python
@@ -1667,9 +1782,11 @@ def get_run_progress(run_state: RunState, start_time: datetime) -> RunProgress:
 
 ---
 
-#### Function: `run_training_command`
+#### Function: `run_training_command` **[PYTHON]**
 
-**Location**: `trading/commands/run_training.py`
+**Location**: `src/trading/commands/run_training.py`
+
+**Note**: Main Python orchestrator that coordinates Rust core functions and Python strategy logic.
 
 **Signature**:
 ```python
@@ -1738,9 +1855,9 @@ The `inspect-run` command loads and displays results from a previous training ru
 
 ### 7.2 Function Specifications
 
-#### Function: `parse_inspect_run_args`
+#### Function: `parse_inspect_run_args` **[PYTHON]**
 
-**Location**: `trading/commands/inspect_run.py`
+**Location**: `src/trading/commands/inspect_run.py`
 
 **Signature**:
 ```python
@@ -1773,9 +1890,14 @@ def parse_inspect_run_args(args: argparse.Namespace) -> InspectRunRequest:
 
 ---
 
-#### Function: `load_run_artifacts`
+#### Function: `load_run_artifacts` **[RUST]**
 
-**Location**: `trading/training/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.load_run_artifacts`)
+
+**Rust Implementation Notes**:
+- Read JSON files using serde_json
+- Deserialize to Rust structs
+- Return RunArtifacts to Python via PyO3
 
 **Signature**:
 ```python
@@ -1813,9 +1935,11 @@ def load_run_artifacts(run_id: RunId) -> RunArtifacts:
 
 ---
 
-#### Function: `summarize_run_metrics`
+#### Function: `summarize_run_metrics` **[PYTHON]**
 
-**Location**: `trading/commands/inspect_run.py`
+**Location**: `src/trading/commands/inspect_run.py`
+
+**Note**: Formatting and display logic stays in Python.
 
 **Signature**:
 ```python
@@ -1851,9 +1975,9 @@ def summarize_run_metrics(metrics: RunMetrics) -> str:
 
 ---
 
-#### Function: `format_run_summary`
+#### Function: `format_run_summary` **[PYTHON]**
 
-**Location**: `trading/commands/inspect_run.py`
+**Location**: `src/trading/commands/inspect_run.py`
 
 **Signature**:
 ```python
@@ -1886,9 +2010,9 @@ def format_run_summary(artifacts: RunArtifacts) -> str:
 
 ---
 
-#### Function: `print_run_summary`
+#### Function: `print_run_summary` **[PYTHON]**
 
-**Location**: `trading/commands/inspect_run.py`
+**Location**: `src/trading/commands/inspect_run.py`
 
 **Signature**:
 ```python
@@ -1915,9 +2039,11 @@ def print_run_summary(summary: str) -> None:
 
 ---
 
-#### Function: `export_run_data`
+#### Function: `export_run_data` **[PYTHON]**
 
-**Location**: `trading/commands/inspect_run.py`
+**Location**: `src/trading/commands/inspect_run.py`
+
+**Note**: Can call Rust functions for efficient CSV/JSON serialization if needed.
 
 **Signature**:
 ```python
@@ -1960,9 +2086,9 @@ def export_run_data(
 
 ---
 
-#### Function: `run_inspect_run_command`
+#### Function: `run_inspect_run_command` **[PYTHON]**
 
-**Location**: `trading/commands/inspect_run.py`
+**Location**: `src/trading/commands/inspect_run.py`
 
 **Signature**:
 ```python
@@ -1999,7 +2125,7 @@ def run_inspect_run_command(args: argparse.Namespace) -> int:
 
 ### 8.1 Main CLI Function
 
-**Location**: `trading/main.py`
+**Location**: `src/trading/main.py` **[PYTHON]**
 
 **Signature**:
 ```python
@@ -2032,9 +2158,13 @@ Each subcommand should have:
 
 ### 9.1 Dataset Metadata Management
 
-#### Function: `read_dataset_metadata`
+#### Function: `read_dataset_metadata` **[RUST]**
 
-**Location**: `trading/data/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.read_dataset_metadata`)
+
+**Rust Implementation Notes**:
+- Read JSON metadata file using serde_json
+- Return DatasetMetadata struct to Python via PyO3
 
 **Signature**:
 ```python
@@ -2053,9 +2183,14 @@ def read_dataset_metadata(dataset_id: DatasetId) -> DatasetMetadata:
 
 ---
 
-#### Function: `list_datasets`
+#### Function: `list_datasets` **[RUST]**
 
-**Location**: `trading/data/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.list_datasets`)
+
+**Rust Implementation Notes**:
+- Use `walkdir` crate to scan `~/.trading/datasets/`
+- Read metadata files efficiently
+- Return list of DatasetMetadata to Python
 
 **Signature**:
 ```python
@@ -2074,9 +2209,13 @@ def list_datasets() -> list[DatasetId]:
 
 ---
 
-#### Function: `validate_dataset_exists`
+#### Function: `validate_dataset_exists` **[RUST]**
 
-**Location**: `trading/data/storage.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.validate_dataset_exists`)
+
+**Rust Implementation Notes**:
+- Check file existence using `std::path::Path::exists()`
+- Raise StorageError if not found (converted to Python exception via PyO3)
 
 **Signature**:
 ```python
@@ -2110,9 +2249,14 @@ def validate_dataset_exists(dataset_id: DatasetId) -> bool:
 
 ### 9.2 Account Helper Functions
 
-#### Function: `calculate_account_equity`
+#### Function: `calculate_account_equity` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.calculate_account_equity`)
+
+**Rust Implementation Notes**:
+- Core equity calculation in Rust for performance
+- Accept Account and current prices (dict from Python)
+- Return float to Python
 
 **Signature**:
 ```python
@@ -2137,9 +2281,14 @@ def calculate_account_equity(
 
 ---
 
-#### Function: `process_clearing`
+#### Function: `process_clearing` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.process_clearing`)
+
+**Rust Implementation Notes**:
+- Core clearing logic in Rust
+- Update positions, balances, pending quantities
+- Handle business day logic if `use_business_days` is True
 
 **Signature**:
 ```python
@@ -2182,9 +2331,14 @@ def process_clearing(
 
 ---
 
-#### Function: `is_business_day`
+#### Function: `is_business_day` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.is_business_day`)
+
+**Rust Implementation Notes**:
+- Use `chrono` crate for date handling
+- Check against US market holidays (hardcoded list or use `calendars` crate)
+- Return bool to Python
 
 **Signature**:
 ```python
@@ -2215,9 +2369,14 @@ def is_business_day(date: datetime) -> bool:
 
 ---
 
-#### Function: `next_business_day`
+#### Function: `next_business_day` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.next_business_day`)
+
+**Rust Implementation Notes**:
+- Use `chrono` crate for date arithmetic
+- Skip weekends and holidays
+- Return datetime to Python (via PyO3 datetime conversion)
 
 **Signature**:
 ```python
@@ -2249,9 +2408,14 @@ def next_business_day(start_date: datetime, days: int) -> datetime:
 
 ---
 
-#### Function: `reserve_funds`
+#### Function: `reserve_funds` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.reserve_funds`)
+
+**Rust Implementation Notes**:
+- Update Account's reserved_balance in Rust
+- Validate available balance
+- Return updated Account to Python
 
 **Signature**:
 ```python
@@ -2284,9 +2448,14 @@ def reserve_funds(account: Account, amount: float) -> Account:
 
 ---
 
-#### Function: `release_reservation`
+#### Function: `release_reservation` **[RUST]**
 
-**Location**: `trading/account/account.py`
+**Location**: `rust/src/lib.rs` (exposed as `trading._core.release_reservation`)
+
+**Rust Implementation Notes**:
+- Decrease Account's reserved_balance
+- Validate reserved_balance >= amount
+- Return updated Account to Python
 
 **Signature**:
 ```python
@@ -2318,7 +2487,9 @@ def release_reservation(account: Account, amount: float) -> Account:
 
 ### 9.3 Strategy Base Class
 
-**Location**: `trading/strategies/base.py`
+**Location**: `src/trading/strategies/base.py` **[PYTHON]**
+
+**Note**: Strategy base class stays in Python for ML/RL integration.
 
 **Signature**:
 ```python
@@ -2343,25 +2514,25 @@ class Strategy(ABC):
 
 Recommended implementation order:
 
-1. **Type definitions** (`trading/types.py`): Add all missing types (OrderStatus, Order, DatasetBundle, Gap, RewardSignal, RunProgress)
-2. **Exception definitions** (`trading/exceptions.py`): Create exception hierarchy
-3. **Data normalization** (`trading/data/normalize.py`): `normalize_bars`, `normalize_synth_bars`, `normalize_timezone`
-4. **Data validation** (`trading/data/validate.py`): `validate_bars`, `detect_data_gaps`, `fill_data_gaps`
-5. **Data storage** (`trading/data/storage.py`): `store_dataset`, `load_datasets`, `read_dataset_metadata`, `list_datasets`, `validate_dataset_exists`
-7. **Data sources** (`trading/data/sources.py`): `resolve_data_source`, `fetch_bars` implementations
-8. **Synthetic data** (`trading/data/synthetic.py`): `build_synth_generator`, `generate_synth_bars`
-9. **Account management** (`trading/account/account.py`): `initialize_account`, `update_account_from_executions`, `calculate_account_equity`, `process_clearing`, `is_business_day`, `next_business_day`, `reserve_funds`, `release_reservation`
-10. **Risk constraints** (`trading/risk/constraints.py`): `apply_risk_constraints` (with universe support)
-11. **Execution** (`trading/execution/simulator.py`): `create_order`, `cancel_order`, `execute_orders`
-12. **Strategy base** (`trading/strategies/base.py`): `Strategy` ABC with optional `update_from_reward` method
-13. **Strategy registry** (`trading/strategies/registry.py`): `resolve_strategy_class`, `instantiate_strategy`
-14. **Training components** (`trading/training/`): All training-related functions including `iteration_schedule` (with variable sampling support), `build_analysis_snapshot` (with universe and missing data support), `checkpoint_run_state`, `resume_training_run`
-14. **Training logging** (`trading/training/logging.py`): `log_event`
-15. **Training monitoring** (`trading/training/monitoring.py`): `get_run_progress`
-16. **Metrics** (`trading/metrics/compute.py`): `compute_run_metrics` (with advanced metrics)
-17. **Configuration validation** (`trading/commands/run_training.py`): `validate_training_config`
-18. **Commands** (`trading/commands/`): All command functions (updated with new features)
-19. **CLI entry point** (`trading/main.py`): `main()` function
+1. **Type definitions** (`src/trading/types.py` **[PYTHON]**): Add all missing types (OrderStatus, Order, DatasetBundle, Gap, RewardSignal, RunProgress). Types are Python Pydantic models but may have Rust equivalents for performance.
+2. **Exception definitions** (`src/trading/exceptions.py` **[PYTHON]**): Create exception hierarchy. Rust errors convert to Python exceptions via PyO3.
+3. **Data normalization** (`rust/src/lib.rs` **[RUST]**): `normalize_bars`, `normalize_synth_bars`, `normalize_timezone` - all in Rust for performance
+4. **Data validation** (`rust/src/lib.rs` **[RUST]**): `validate_bars`, `detect_data_gaps`, `fill_data_gaps` - all in Rust
+5. **Data storage** (`rust/src/lib.rs` **[RUST]**): `store_dataset`, `load_datasets`, `read_dataset_metadata`, `list_datasets`, `validate_dataset_exists` - Parquet I/O in Rust
+6. **Data sources** (`src/trading/data/sources.py` **[PYTHON]**): `resolve_data_source`, `fetch_bars` implementations - external API integration stays in Python
+7. **Synthetic data** (`rust/src/lib.rs` **[RUST]** for generation, `src/trading/data/synthetic.py` **[PYTHON]** for config): `build_synth_generator` (Python), `generate_synth_bars` (Rust)
+8. **Account management** (`rust/src/lib.rs` **[RUST]**): `initialize_account`, `update_account_from_executions`, `calculate_account_equity`, `process_clearing`, `is_business_day`, `next_business_day`, `reserve_funds`, `release_reservation` - all core account logic in Rust
+9. **Risk constraints** (`rust/src/lib.rs` **[RUST]**): `apply_risk_constraints` (with universe support) - validation logic in Rust
+10. **Execution** (`rust/src/lib.rs` **[RUST]**): `create_order`, `cancel_order`, `execute_orders` - execution engine in Rust
+11. **Strategy base** (`src/trading/strategies/base.py` **[PYTHON]**): `Strategy` ABC with optional `update_from_reward` method - stays in Python for ML/RL
+12. **Strategy registry** (`src/trading/strategies/registry.py` **[PYTHON]**): `resolve_strategy_class`, `instantiate_strategy` - Python for flexibility
+13. **Training components** (`rust/src/lib.rs` **[RUST]** for iteration, `src/trading/training/` **[PYTHON]** for orchestration): `iteration_schedule` (Rust), `build_analysis_snapshot` (Python wrapper), `checkpoint_run_state` (Rust), `resume_training_run` (Rust)
+14. **Training logging** (`src/trading/training/logging.py` **[PYTHON]**): `log_event` - Python for flexibility
+15. **Training monitoring** (`src/trading/training/monitoring.py` **[PYTHON]**): `get_run_progress` - Python wrapper
+16. **Metrics** (`rust/src/lib.rs` **[RUST]**): `compute_run_metrics` (with advanced metrics) - statistical calculations in Rust
+17. **Configuration validation** (`src/trading/commands/run_training.py` **[PYTHON]**): `validate_training_config` - Python, calls Rust for dataset validation
+18. **Commands** (`src/trading/commands/` **[PYTHON]**): All command functions - Python orchestrators that call Rust core
+19. **CLI entry point** (`src/trading/main.py` **[PYTHON]**): `main()` function - Python CLI
 
 ---
 
@@ -2394,9 +2565,11 @@ Add to `pyproject.toml` dependencies:
 
 ---
 
-#### Function: `validate_training_config`
+#### Function: `validate_training_config` **[PYTHON]**
 
-**Location**: `trading/commands/run_training.py`
+**Location**: `src/trading/commands/run_training.py`
+
+**Note**: Configuration validation stays in Python, but can call Rust functions to validate dataset existence.
 
 **Signature**:
 ```python
@@ -2480,10 +2653,59 @@ These features align with the architecture document but are deferred:
 
 ## 14. Directory Structure
 
+**Hybrid Rust + Python Structure**:
+
 ```
 trading/
-  __init__.py
-  main.py
+  rust/                    # Rust core library
+    Cargo.toml
+    src/
+      lib.rs              # Main Rust module (PyO3 bindings)
+      data.rs             # Data processing functions
+      account.rs          # Account management
+      execution.rs        # Order execution
+      metrics.rs          # Metrics computation
+      storage.rs          # Parquet I/O and storage
+  src/                    # Python package
+    trading/
+      __init__.py         # Package init, imports Rust extension
+      main.py             # CLI entry point
+      types.py            # Pydantic models
+      exceptions.py       # Exception hierarchy
+      commands/           # CLI command implementations
+        fetch_data.py
+        gen_synth.py
+        run_training.py
+        inspect_run.py
+      data/               # Data source integration (Python)
+        sources.py
+        synthetic.py
+      strategies/         # Strategy framework (Python)
+        base.py
+        registry.py
+      training/           # Training orchestration (Python)
+        snapshot.py
+        strategy_executor.py
+        recording.py
+        logging.py
+        monitoring.py
+  tests/                  # Test suite
+    test_types.py
+    test_rust_integration.py
+    ...
+  docs/                   # Documentation
+    architecture.md
+    cli-and-implementation.md
+    design-analysis.md
+  pyproject.toml          # Python project config (Maturin build)
+  README.md
+```
+
+**Key Points**:
+- Rust code in `rust/` directory, exposed via PyO3 as `trading._core` module
+- Python code in `src/trading/` directory
+- Python imports Rust functions: `from trading._core import normalize_bars, ...`
+- Build system: Maturin (configured in `pyproject.toml`)
   types.py
   exceptions.py
   commands/
@@ -2524,6 +2746,57 @@ trading/
     __init__.py
     compute.py
 ```
+
+---
+
+## 15. Rust Implementation Guidelines
+
+### 15.1 PyO3 Integration
+
+All Rust functions exposed to Python must:
+- Use `#[pyfunction]` macro for standalone functions
+- Use `#[pymodule]` macro for module initialization
+- Return `PyResult<T>` for error handling (converts to Python exceptions)
+- Accept Python types via PyO3 bindings (`PyAny`, `PyDict`, `PyList`, etc.)
+- Convert Rust types to Python using `IntoPy<PyObject>` trait
+
+**Example**:
+```rust
+use pyo3::prelude::*;
+
+#[pyfunction]
+fn normalize_bars(py: Python, bars: &PyAny) -> PyResult<PyObject> {
+    // Convert Python iterator to Rust Vec
+    // Process in Rust
+    // Return Python iterator
+}
+```
+
+### 15.2 Type Conversions
+
+- **Pydantic Models**: Rust structs should mirror Python Pydantic models. Use `serde` for serialization/deserialization.
+- **Datetimes**: Use `chrono` crate, convert to/from Python `datetime` via PyO3
+- **Collections**: Convert Python lists/dicts to Rust Vec/HashMap using PyO3 bindings
+- **Errors**: Define Rust error types, convert to Python exceptions using `PyErr`
+
+### 15.3 Performance Considerations
+
+- **Parquet I/O**: Use `polars` or `arrow` crate for high-performance Parquet operations
+- **Iterators**: Prefer Rust iterators over collecting into Vec when possible
+- **Memory**: Minimize data copying between Python and Rust
+- **Parallelization**: Use `rayon` crate for parallel processing where beneficial
+
+### 15.4 Rust Dependencies
+
+Add to `rust/Cargo.toml`:
+- `pyo3 = { version = "0.21", features = ["extension-module"] }`
+- `serde = { version = "1.0", features = ["derive"] }`
+- `serde_json = "1.0"`
+- `chrono = { version = "0.4", features = ["serde"] }`
+- `polars = "0.40"` or `arrow = "50"` (for Parquet)
+- `uuid = { version = "1.0", features = ["v4"] }` (for order IDs)
+- `rand = "0.8"` (for synthetic data)
+- `walkdir = "2"` (for directory scanning)
 
 ---
 

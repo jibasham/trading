@@ -8,4 +8,6 @@ except ImportError:
     RUST_AVAILABLE = False
     hello_rust = None
 
-__all__ = ["RUST_AVAILABLE", "hello_rust"]
+from trading.exceptions import AccountError, TradingError  # noqa: E402  (import after try/except)
+
+__all__ = ["RUST_AVAILABLE", "hello_rust", "AccountError", "TradingError"]

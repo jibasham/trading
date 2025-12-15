@@ -2,6 +2,11 @@
 
 This document applies a hermeneutic circle analysis to evaluate the alignment between `architecture.md` (the whole/vision) and `cli-and-implementation.md` (the parts/details), identifying gaps and proposing refinements.
 
+**Note**: The implementation now uses a **hybrid Rust + Python architecture**:
+- **Rust**: Performance-critical components (data processing, account management, execution, metrics)
+- **Python**: Strategy logic, ML/RL integration, CLI, configuration
+- Functions are marked as **[RUST]** or **[PYTHON]** in the implementation specification
+
 ## Executive Summary
 
 The implementation specification is **well-planned and comprehensive** for an initial MVP, but several architectural concepts from the high-level design are deferred or simplified. The gaps are intentional simplifications for initial implementation, but should be documented as known limitations and future work.
@@ -425,4 +430,5 @@ The implementation spec is **ready for development** with the understanding that
 ---
 
 This analysis shows that while the implementation spec is comprehensive and well-structured, it intentionally simplifies some architectural concepts for the MVP. The gaps are well-defined and can be addressed incrementally without requiring major architectural changes.
+
 

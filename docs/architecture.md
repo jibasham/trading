@@ -5,7 +5,12 @@ This document outlines the high-level architecture of a stock market trading bot
 
 The primary intended user is a single developer/researcher, running the system privately. The system should support both short exploratory experiments and long-running processes that may remain active for days, weeks, or months.
 
-The goal at this stage is to define major components, responsibilities, and data flows without committing to specific technologies, libraries, or storage implementations.
+**Architecture Decision**: The system uses a **hybrid Rust + Python architecture**:
+- **Rust Core**: High-performance components (data processing, account management, execution engine, metrics computation)
+- **Python Layer**: Strategy development, ML/RL integration, CLI, and configuration management
+- **Integration**: Rust functions are exposed to Python via PyO3 bindings, allowing Python strategies to call Rust core functions
+
+This hybrid approach provides performance where needed (backtesting large datasets) while maintaining flexibility for strategy development and ML/RL experimentation.
 
 ## 2. Core System Capabilities
 At a high level, the trading bot should provide:
@@ -157,16 +162,22 @@ These can be layered on top of the current high-level structure as the project e
 ## 7. Interaction Model and Interfaces
 
 ### 7.1 Overall Approach
-The system is primarily a **Python library** exposing core concepts such as datasets, strategies, training runs, and accounts. On top of this library, a **command-line interface (CLI)** provides the main day-to-day interaction surface.
+The system is a **hybrid Rust + Python library** exposing core concepts such as datasets, strategies, training runs, and accounts. On top of this library, a **command-line interface (CLI)** provides the main day-to-day interaction surface.
+
+**Language Split**:
+- **Rust**: Data processing, storage, account management, execution engine, metrics computation (performance-critical paths)
+- **Python**: Strategy logic, ML/RL, CLI, configuration parsing, event logging (flexibility layer)
+- **Integration**: Rust functions are exposed via PyO3 as `trading._core` module, callable from Python
 
 The CLI is a thin layer that:
-- Parses command-line arguments and experiment configuration files.
-- Constructs library objects (datasets, strategies, training runs) from configuration.
-- Invokes well-defined library entrypoints to perform actions (e.g., fetch data, generate synthetic data, run a training cycle, inspect past runs).
+- Parses command-line arguments and experiment configuration files (Python).
+- Constructs library objects (datasets, strategies, training runs) from configuration (Python).
+- Invokes well-defined library entrypoints to perform actions (Python calls Rust core functions).
 
 This separation allows:
 - Automated and repeatable experiments via CLI and config files.
 - Direct use of the same core functionality from Python for debugging, custom workflows, or notebook-based analysis.
+- High performance for data-intensive operations (Rust) while maintaining flexibility for strategy development (Python).
 
 ### 7.2 Library-Level Concepts (High-Level)
 At the library level, the following conceptual objects are expected:

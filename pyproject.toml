@@ -4,10 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "trading"
-version = "0.1.0"
+version = "0.2.0"
 description = "Trading bot system with Rust core and Python strategies"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">3.11"
 dependencies = [
     "maturin>=1.10.2",
     "pytest>=9.0.2",
