@@ -1,28 +1,25 @@
-from dataclasses import asdict
+"""Tests for Rust account management functions."""
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trading._core import (
-    AccountError,
-    calculate_account_equity,
-    is_business_day,
-    next_business_day,
-    process_clearing,
-    release_reservation,
-    reserve_funds,
-)
+from trading._core import (AccountError, calculate_account_equity,
+                           is_business_day, next_business_day,
+                           process_clearing, release_reservation,
+                           reserve_funds)
 from trading.types import Account, PendingTransaction, Position, Symbol
 
 
 def _account_dict() -> dict:
+    """Create a test account as a dictionary for Rust functions."""
     base_account = Account(
         account_id="acct-1",
         base_currency="USD",
         cleared_balance=1000.0,
         pending_balance=200.0,
         positions={
-            Symbol("ABC"): Position(
+            "ABC": Position(
                 symbol=Symbol("ABC"),
                 quantity=5.0,
                 cost_basis=10.0,
@@ -42,10 +39,11 @@ def _account_dict() -> dict:
             )
         ],
     )
-    return asdict(base_account)
+    return base_account.model_dump()
 
 
 def test_calculate_equity_with_mark_to_market() -> None:
+    """Equity should include cleared balance, pending balance, and position value."""
     account = _account_dict()
     current_prices = {"ABC": 12.0}
 
@@ -55,6 +53,7 @@ def test_calculate_equity_with_mark_to_market() -> None:
 
 
 def test_process_clearing_moves_pending_transaction() -> None:
+    """Processing clearing should settle pending transactions."""
     account = _account_dict()
     current_timestamp = datetime.now(timezone.utc)
 
@@ -69,6 +68,7 @@ def test_process_clearing_moves_pending_transaction() -> None:
 
 
 def test_reserve_and_release_funds_updates_reserved_balance() -> None:
+    """Reserve and release should update reserved_balance correctly."""
     account = _account_dict()
 
     reserve_funds(account, 100.0)
@@ -79,6 +79,7 @@ def test_reserve_and_release_funds_updates_reserved_balance() -> None:
 
 
 def test_reserve_funds_fails_when_insufficient_available() -> None:
+    """Reserving more than available should raise AccountError."""
     account = _account_dict()
 
     with pytest.raises(AccountError):
@@ -86,6 +87,7 @@ def test_reserve_funds_fails_when_insufficient_available() -> None:
 
 
 def test_business_day_helpers() -> None:
+    """Business day helpers should correctly identify weekdays."""
     saturday = datetime(2025, 1, 4, tzinfo=timezone.utc)
     monday = datetime(2025, 1, 6, tzinfo=timezone.utc)
 

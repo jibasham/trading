@@ -2514,14 +2514,14 @@ class Strategy(ABC):
 
 Recommended implementation order:
 
-1. **Type definitions** (`src/trading/types.py` **[PYTHON]**): Add all missing types (OrderStatus, Order, DatasetBundle, Gap, RewardSignal, RunProgress). Types are Python Pydantic models but may have Rust equivalents for performance.
-2. **Exception definitions** (`src/trading/exceptions.py` **[PYTHON]**): Create exception hierarchy. Rust errors convert to Python exceptions via PyO3.
+1. ✅ **Type definitions** (`src/trading/types.py` **[PYTHON]**): Add all missing types (OrderStatus, Order, DatasetBundle, Gap, RewardSignal, RunProgress). Types are Python Pydantic models but may have Rust equivalents for performance. **COMPLETED**: All types migrated to Pydantic BaseModel with comprehensive tests.
+2. ✅ **Exception definitions** (`src/trading/exceptions.py` **[PYTHON]**): Create exception hierarchy. Rust errors convert to Python exceptions via PyO3. **COMPLETED**: ConfigError, DataSourceError, DataValidationError, StorageError, StrategyError added with tests.
 3. **Data normalization** (`rust/src/lib.rs` **[RUST]**): `normalize_bars`, `normalize_synth_bars`, `normalize_timezone` - all in Rust for performance
 4. **Data validation** (`rust/src/lib.rs` **[RUST]**): `validate_bars`, `detect_data_gaps`, `fill_data_gaps` - all in Rust
 5. **Data storage** (`rust/src/lib.rs` **[RUST]**): `store_dataset`, `load_datasets`, `read_dataset_metadata`, `list_datasets`, `validate_dataset_exists` - Parquet I/O in Rust
 6. **Data sources** (`src/trading/data/sources.py` **[PYTHON]**): `resolve_data_source`, `fetch_bars` implementations - external API integration stays in Python
 7. **Synthetic data** (`rust/src/lib.rs` **[RUST]** for generation, `src/trading/data/synthetic.py` **[PYTHON]** for config): `build_synth_generator` (Python), `generate_synth_bars` (Rust)
-8. **Account management** (`rust/src/lib.rs` **[RUST]**): `initialize_account`, `update_account_from_executions`, `calculate_account_equity`, `process_clearing`, `is_business_day`, `next_business_day`, `reserve_funds`, `release_reservation` - all core account logic in Rust
+8. ✅ **Account management** (`rust/src/lib.rs` **[RUST]**): `initialize_account`, `update_account_from_executions`, `calculate_account_equity`, `process_clearing`, `is_business_day`, `next_business_day`, `reserve_funds`, `release_reservation` - all core account logic in Rust. **PARTIAL**: `calculate_account_equity`, `process_clearing`, `is_business_day`, `next_business_day`, `reserve_funds`, `release_reservation` implemented and tested.
 9. **Risk constraints** (`rust/src/lib.rs` **[RUST]**): `apply_risk_constraints` (with universe support) - validation logic in Rust
 10. **Execution** (`rust/src/lib.rs` **[RUST]**): `create_order`, `cancel_order`, `execute_orders` - execution engine in Rust
 11. **Strategy base** (`src/trading/strategies/base.py` **[PYTHON]**): `Strategy` ABC with optional `update_from_reward` method - stays in Python for ML/RL
@@ -2556,9 +2556,10 @@ Test file structure mirrors source structure:
 ## 12. Dependencies to Add
 
 Add to `pyproject.toml` dependencies:
-- `pyyaml>=6.0.3` (already present)
-- `pytest>=9.0.2` (already present)
-- `pydantic>=2.0.0` (for data models and validation)
+- ✅ `pyyaml>=6.0.3` (already present)
+- ✅ `pytest>=9.0.2` (already present)
+- ✅ `pydantic>=2.0.0` (for data models and validation) **ADDED**
+- ✅ `ruff>=0.8.0` (for linting) **ADDED**
 - `pyarrow>=14.0.0` or `pandas>=2.0.0` (for Parquet I/O)
 - `yfinance>=0.2.0` (for Yahoo Finance data source)
 - `numpy>=1.24.0` (for synthetic data generation and metrics)
