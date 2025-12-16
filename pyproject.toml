@@ -10,11 +10,16 @@ readme = "README.md"
 requires-python = ">3.11"
 dependencies = [
     "maturin>=1.10.2",
+    "pandas>=2.0.0",
     "pydantic>=2.0.0",
     "pytest>=9.0.2",
     "pyyaml>=6.0.3",
     "ruff>=0.8.0",
+    "yfinance>=0.2.0",
 ]
+
+[project.scripts]
+trading = "trading.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -2516,10 +2516,10 @@ Recommended implementation order:
 
 1. ✅ **Type definitions** (`src/trading/types.py` **[PYTHON]**): Add all missing types (OrderStatus, Order, DatasetBundle, Gap, RewardSignal, RunProgress). Types are Python Pydantic models but may have Rust equivalents for performance. **COMPLETED**: All types migrated to Pydantic BaseModel with comprehensive tests.
 2. ✅ **Exception definitions** (`src/trading/exceptions.py` **[PYTHON]**): Create exception hierarchy. Rust errors convert to Python exceptions via PyO3. **COMPLETED**: ConfigError, DataSourceError, DataValidationError, StorageError, StrategyError added with tests.
-3. **Data normalization** (`rust/src/lib.rs` **[RUST]**): `normalize_bars`, `normalize_synth_bars`, `normalize_timezone` - all in Rust for performance
-4. **Data validation** (`rust/src/lib.rs` **[RUST]**): `validate_bars`, `detect_data_gaps`, `fill_data_gaps` - all in Rust
-5. **Data storage** (`rust/src/lib.rs` **[RUST]**): `store_dataset`, `load_datasets`, `read_dataset_metadata`, `list_datasets`, `validate_dataset_exists` - Parquet I/O in Rust
-6. **Data sources** (`src/trading/data/sources.py` **[PYTHON]**): `resolve_data_source`, `fetch_bars` implementations - external API integration stays in Python
+3. ✅ **Data normalization** (`rust/src/lib.rs` **[RUST]**): `normalize_bars`, `normalize_synth_bars`, `normalize_timezone` - all in Rust for performance. **COMPLETED**: `normalize_bars` and timezone normalization implemented with 10 tests.
+4. ✅ **Data validation** (`rust/src/lib.rs` **[RUST]**): `validate_bars`, `detect_data_gaps`, `fill_data_gaps` - all in Rust. **COMPLETED**: All functions implemented with 31 tests total.
+5. ✅ **Data storage** (`rust/src/lib.rs` **[RUST]**): `store_dataset`, `load_datasets`, `read_dataset_metadata`, `list_datasets`, `validate_dataset_exists` - Parquet I/O in Rust. **COMPLETED**: All storage functions implemented with Polars Parquet I/O and 16 tests.
+6. ✅ **Data sources** (`src/trading/data/sources.py` **[PYTHON]**): `resolve_data_source`, `fetch_bars` implementations - external API integration stays in Python. **COMPLETED**: YahooDataSource, LocalDataSource, CSVDataSource implemented with 25 tests.
 7. **Synthetic data** (`rust/src/lib.rs` **[RUST]** for generation, `src/trading/data/synthetic.py` **[PYTHON]** for config): `build_synth_generator` (Python), `generate_synth_bars` (Rust)
 8. ✅ **Account management** (`rust/src/lib.rs` **[RUST]**): `initialize_account`, `update_account_from_executions`, `calculate_account_equity`, `process_clearing`, `is_business_day`, `next_business_day`, `reserve_funds`, `release_reservation` - all core account logic in Rust. **PARTIAL**: `calculate_account_equity`, `process_clearing`, `is_business_day`, `next_business_day`, `reserve_funds`, `release_reservation` implemented and tested.
 9. **Risk constraints** (`rust/src/lib.rs` **[RUST]**): `apply_risk_constraints` (with universe support) - validation logic in Rust

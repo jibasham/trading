@@ -1,0 +1,19 @@
+# Example fetch-data configuration
+# Fetches SPY daily data for 2023
+
+symbols:
+  - "SPY"
+
+date_range:
+  start: "2023-01-01"
+  end: "2024-01-01"
+
+granularity: "1d"
+data_source: "yahoo"
+
+# Optional: explicit dataset ID (auto-generated if omitted)
+# dataset_id: "spy_daily_2023"
+
+# Optional: data source specific parameters
+source_params: {}
+

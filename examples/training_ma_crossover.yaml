@@ -1,0 +1,23 @@
+# Example: MA Crossover strategy training
+
+datasets:
+  - "yahoo_spy_1d_20230101_20240101"
+
+strategy:
+  class_path: "trading.strategies.examples.MovingAverageCrossoverStrategy"
+  params:
+    symbol: "SPY"
+    short_period: 5
+    long_period: 20
+    quantity: 20
+
+account:
+  starting_balance: 10000.0
+
+risk:
+  max_position_size: 8000.0
+  max_leverage: 1.0
+
+logging:
+  level: "INFO"
+
