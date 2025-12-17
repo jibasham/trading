@@ -301,19 +301,37 @@ def cmd_run_training(args: argparse.Namespace) -> int:
 
     # Run backtest
     print("\n🚀 Running training...")
+    if config.risk_max_position_size or config.risk_max_leverage != 1.0:
+        print(
+            f"   Risk: max_position=${config.risk_max_position_size or 'unlimited'}, leverage={config.risk_max_leverage}x"
+        )
+
     backtest = Backtest(
         bars=all_bars,
         strategy=strategy,
         initial_balance=config.account_starting_balance,
         run_id=str(config.run_id),
+        max_position_size=config.risk_max_position_size,
+        max_leverage=config.risk_max_leverage,
     )
     result = backtest.run()
+
+    # Report any rejected orders
+    if backtest.rejected_orders:
+        print(
+            f"   ⚠️  {len(backtest.rejected_orders)} orders rejected by risk constraints"
+        )
 
     # Display results
     print("\n" + "=" * 60)
     print("RESULTS")
     print("=" * 60)
-    print(f"Final Equity:    ${result.equity_history[-1][1]:,.2f}")
+    final_equity = (
+        result.equity_history[-1][1]
+        if result.equity_history
+        else config.account_starting_balance
+    )
+    print(f"Final Equity:    ${final_equity:,.2f}")
     print(f"Total Return:    {result.metrics.total_return:+.2%}")
     print(f"Max Drawdown:    {result.metrics.max_drawdown:.2%}")
     print(f"Volatility:      {result.metrics.volatility:.4f}")
@@ -321,7 +339,139 @@ def cmd_run_training(args: argparse.Namespace) -> int:
         print(f"Sharpe Ratio:    {result.metrics.sharpe_ratio:.2f}")
     print(f"Num Trades:      {result.metrics.num_trades}")
 
+    # Store results
+    if not args.no_save:
+        import json
+
+        from trading._core import store_run_results
+
+        print("\n💾 Storing results...")
+
+        # Prepare data for storage
+        config_json = config.model_dump_json()
+        metrics_json = result.metrics.model_dump_json()
+
+        # Serialize executions
+        executions_data = [
+            {
+                "symbol": str(e.symbol),
+                "side": e.side,
+                "quantity": e.quantity,
+                "price": e.price,
+                "timestamp": e.timestamp.isoformat(),
+                "order_id": e.order_id,
+            }
+            for e in result.executions
+        ]
+        executions_json = json.dumps(executions_data)
+
+        # Serialize equity history
+        equity_data = [
+            {"timestamp": ts.isoformat(), "equity": eq}
+            for ts, eq in result.equity_history
+        ]
+        equity_json = json.dumps(equity_data)
+
+        try:
+            store_run_results(
+                str(config.run_id),
+                config_json,
+                metrics_json,
+                executions_json,
+                equity_json,
+                final_equity,
+                result.metrics.num_trades,
+            )
+            print(f"   Saved to ~/.trading/runs/{config.run_id}/")
+        except Exception as e:
+            print(f"   Warning: Failed to save results: {e}")
+
     print("\n✅ Training complete!")
+
+    return 0
+
+
+def cmd_inspect_run(args: argparse.Namespace) -> int:
+    """Inspect a completed training run."""
+    from trading._core import list_runs, load_run_results, run_exists
+
+    # If no run_id provided, list available runs
+    if args.run_id is None:
+        runs = list_runs()
+        if not runs:
+            print("No runs found in ~/.trading/runs/")
+            return 0
+
+        print("=" * 70)
+        print("AVAILABLE RUNS")
+        print("=" * 70)
+        print(f"{'Run ID':<45} {'Trades':>8} {'Final Equity':>15}")
+        print("-" * 70)
+
+        for run_id in runs[:20]:  # Show latest 20
+            try:
+                data = load_run_results(run_id)
+                summary = data.get("summary", {})
+                final_eq = summary.get("final_equity", 0)
+                num_trades = summary.get("num_trades", 0)
+                print(f"{run_id:<45} {num_trades:>8} ${final_eq:>14,.2f}")
+            except Exception:
+                print(f"{run_id:<45} {'(error)':>8}")
+
+        if len(runs) > 20:
+            print(f"\n... and {len(runs) - 20} more runs")
+
+        return 0
+
+    # Check run exists
+    if not run_exists(args.run_id):
+        print(f"Run not found: {args.run_id}")
+        return 1
+
+    # Load run data
+    try:
+        data = load_run_results(args.run_id)
+    except Exception as e:
+        print(f"Failed to load run: {e}")
+        return 1
+
+    print("=" * 60)
+    print(f"RUN: {args.run_id}")
+    print("=" * 60)
+
+    # Show metrics
+    metrics = data.get("metrics", {})
+    if metrics:
+        print("\n📊 METRICS")
+        print(f"   Total Return:  {metrics.get('total_return', 0):+.2%}")
+        print(f"   Max Drawdown:  {metrics.get('max_drawdown', 0):.2%}")
+        print(f"   Volatility:    {metrics.get('volatility', 0):.4f}")
+        sharpe = metrics.get("sharpe_ratio")
+        if sharpe is not None:
+            print(f"   Sharpe Ratio:  {sharpe:.2f}")
+        print(f"   Num Trades:    {metrics.get('num_trades', 0)}")
+
+    # Show config
+    config = data.get("config", {})
+    if config and args.show_config:
+        print("\n⚙️  CONFIGURATION")
+        print(f"   Strategy:  {config.get('strategy_class_path', 'N/A')}")
+        print(f"   Datasets:  {', '.join(config.get('datasets', []))}")
+        print(f"   Balance:   ${config.get('account_starting_balance', 0):,.2f}")
+
+    # Show executions
+    executions = data.get("executions", [])
+    if executions and args.show_trades:
+        print(f"\n📋 TRADES ({len(executions)} total)")
+        for i, e in enumerate(executions[:20]):
+            ts = e.get("timestamp", "")[:10]
+            side = e.get("side", "").upper()
+            qty = e.get("quantity", 0)
+            sym = e.get("symbol", "")
+            price = e.get("price", 0)
+            print(f"   {i+1:3}. {ts} | {side:4} {qty:.0f} {sym} @ ${price:.2f}")
+        if len(executions) > 20:
+            print(f"   ... and {len(executions) - 20} more trades")
 
     return 0
 
@@ -522,6 +672,23 @@ def main() -> int:
         "run-training", help="Run a training session from configuration"
     )
     train_parser.add_argument("config", help="Path to YAML configuration file")
+    train_parser.add_argument(
+        "--no-save", action="store_true", help="Don't save results to storage"
+    )
+
+    # Inspect run command
+    inspect_parser = subparsers.add_parser(
+        "inspect-run", help="Inspect a completed training run"
+    )
+    inspect_parser.add_argument(
+        "run_id", nargs="?", default=None, help="Run ID to inspect (omit to list runs)"
+    )
+    inspect_parser.add_argument(
+        "--show-config", action="store_true", help="Show run configuration"
+    )
+    inspect_parser.add_argument(
+        "--show-trades", action="store_true", help="Show trade history"
+    )
 
     args = parser.parse_args()
 
@@ -537,6 +704,8 @@ def main() -> int:
         return cmd_fetch_data(args)
     elif args.command == "run-training":
         return cmd_run_training(args)
+    elif args.command == "inspect-run":
+        return cmd_inspect_run(args)
 
     return 0
 

@@ -79,6 +79,8 @@ class Backtest:
     :param strategy: Strategy instance to run.
     :param initial_balance: Starting account balance.
     :param run_id: Optional run ID (auto-generated if not provided).
+    :param max_position_size: Optional max position size in dollars (None = no limit).
+    :param max_leverage: Max leverage allowed (default 1.0 = no leverage).
     """
 
     def __init__(
@@ -87,11 +89,16 @@ class Backtest:
         strategy: Strategy,
         initial_balance: float = 10000.0,
         run_id: str | None = None,
+        max_position_size: float | None = None,
+        max_leverage: float = 1.0,
     ) -> None:
         """Initialize backtest engine."""
         self.strategy = strategy
         self.initial_balance = initial_balance
         self.run_id = RunId(run_id or self._generate_run_id())
+        self.max_position_size = max_position_size
+        self.max_leverage = max_leverage
+        self.rejected_orders: list[dict[str, Any]] = []
 
         # Convert bars to NormalizedBar if needed and organize by timestamp
         self.bars_by_timestamp: dict[datetime, dict[str, NormalizedBar]] = {}
@@ -147,7 +154,11 @@ class Backtest:
 
         :returns: BacktestResult with metrics and final state.
         """
-        from trading._core import compute_run_metrics, execute_orders
+        from trading._core import (
+            apply_risk_constraints,
+            compute_run_metrics,
+            execute_orders,
+        )
 
         # Initialize account
         account = Account(
@@ -206,9 +217,36 @@ class Backtest:
                     for symbol, bar in bars_at_ts.items()
                 }
 
-                # Execute orders
+                # Apply risk constraints
                 account_dict = account.model_dump()
-                executions = execute_orders(orders, bars_dict, account_dict, ts)
+                accepted_orders, rejected = apply_risk_constraints(
+                    orders,
+                    account_dict,
+                    bars_dict,
+                    self.max_position_size,
+                    self.max_leverage,
+                )
+
+                # Track rejected orders
+                for rejection in rejected:
+                    self.rejected_orders.append(
+                        {
+                            "timestamp": ts,
+                            "order": rejection["order"],
+                            "reason": rejection["reason"],
+                        }
+                    )
+
+                if not accepted_orders:
+                    # All orders rejected, continue to next timestamp
+                    equity = self._calculate_equity(account, bars_at_ts)
+                    equity_history.append((ts, equity))
+                    continue
+
+                # Execute accepted orders
+                executions = execute_orders(
+                    accepted_orders, bars_dict, account_dict, ts
+                )
 
                 # Update account from dict
                 account = Account.model_validate(account_dict)

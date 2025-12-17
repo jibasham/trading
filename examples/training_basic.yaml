@@ -21,7 +21,7 @@ account:
 
 # Optional: risk constraints
 risk:
-  max_position_size: 5000.0
+  max_position_size: 8000.0  # Max $8000 per position (allows buying ~20 SPY at ~$400)
   max_leverage: 1.0
 
 # Optional: symbol universes

@@ -24,6 +24,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("AccountError", py.get_type::<AccountError>())?;
     m.add("DataValidationError", py.get_type::<DataValidationError>())?;
     m.add("StorageError", py.get_type::<StorageError>())?;
+    m.add("RiskError", py.get_type::<RiskError>())?;
     m.add_function(wrap_pyfunction!(hello_rust, m)?)?;
     m.add_function(wrap_pyfunction!(is_business_day, m)?)?;
     m.add_function(wrap_pyfunction!(next_business_day, m)?)?;
@@ -40,8 +41,14 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_datasets, m)?)?;
     m.add_function(wrap_pyfunction!(dataset_exists, m)?)?;
     m.add_function(wrap_pyfunction!(read_dataset_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_risk_constraints, m)?)?;
     m.add_function(wrap_pyfunction!(execute_orders, m)?)?;
     m.add_function(wrap_pyfunction!(compute_run_metrics, m)?)?;
+    m.add_function(wrap_pyfunction!(store_run_results, m)?)?;
+    m.add_function(wrap_pyfunction!(load_run_results, m)?)?;
+    m.add_function(wrap_pyfunction!(list_runs, m)?)?;
+    m.add_function(wrap_pyfunction!(run_exists, m)?)?;
+    m.add_function(wrap_pyfunction!(delete_run, m)?)?;
     Ok(())
 }
 
@@ -983,6 +990,210 @@ fn read_dataset_metadata(dataset_id: String) -> PyResult<String> {
 }
 
 // ===========================================================================
+// Risk Constraint Functions
+// ===========================================================================
+
+// Custom exception for risk constraint violations
+create_exception!(trading._core, RiskError, PyException);
+
+/// Apply risk constraints to a list of order requests.
+///
+/// Filters orders based on:
+/// - Sufficient cleared balance for buy orders
+/// - Sufficient position quantity for sell orders
+/// - Max position size constraint (if configured)
+/// - Max leverage constraint (if configured)
+///
+/// Args:
+///     orders: List of order request dicts
+///     account: Account dict with balances and positions
+///     bars: Dict mapping symbol -> current bar dict (for price estimates)
+///     max_position_size: Optional max position size in dollars (None = no limit)
+///     max_leverage: Max leverage multiplier (default 1.0 = no leverage)
+///
+/// Returns:
+///     Tuple of (accepted_orders, rejected_orders_with_reasons)
+#[pyfunction]
+#[pyo3(signature = (orders, account, bars, max_position_size=None, max_leverage=1.0))]
+fn apply_risk_constraints(
+    py: Python<'_>,
+    orders: &Bound<'_, PyList>,
+    account: &Bound<'_, PyDict>,
+    bars: &Bound<'_, PyDict>,
+    max_position_size: Option<f64>,
+    max_leverage: f64,
+) -> PyResult<(Py<PyList>, Py<PyList>)> {
+    let accepted = PyList::empty(py);
+    let rejected = PyList::empty(py);
+
+    // Extract account data
+    let cleared_balance: f64 = account
+        .get_item("cleared_balance")?
+        .map(|v| v.extract())
+        .unwrap_or(Ok(0.0))?;
+
+    let positions: Bound<'_, PyDict> = if let Some(pos_val) = account.get_item("positions")? {
+        pos_val.cast::<PyDict>()?.clone()
+    } else {
+        PyDict::new(py).clone()
+    };
+
+    // Track cumulative buying power used in this batch
+    let mut cumulative_buy_value = 0.0;
+
+    for order_obj in orders.iter() {
+        let order: Bound<'_, PyDict> = order_obj.cast::<PyDict>()?.clone();
+
+        let symbol: String = order
+            .get_item("symbol")?
+            .ok_or_else(|| RiskError::new_err("Order missing symbol"))?
+            .extract()?;
+        let side: String = order
+            .get_item("side")?
+            .ok_or_else(|| RiskError::new_err("Order missing side"))?
+            .extract()?;
+        let quantity: f64 = order
+            .get_item("quantity")?
+            .ok_or_else(|| RiskError::new_err("Order missing quantity"))?
+            .extract()?;
+
+        // Get current price for the symbol
+        let price = if let Some(bar_obj) = bars.get_item(&symbol)? {
+            let bar: Bound<'_, PyDict> = bar_obj.cast::<PyDict>()?.clone();
+            bar.get_item("close")?
+                .map(|v| v.extract())
+                .unwrap_or(Ok(0.0))?
+        } else {
+            // No price data - reject order
+            let rejection = PyDict::new(py);
+            rejection.set_item("order", order.clone())?;
+            rejection.set_item("reason", format!("No price data for {}", symbol))?;
+            rejected.append(rejection)?;
+            continue;
+        };
+
+        if quantity <= 0.0 {
+            let rejection = PyDict::new(py);
+            rejection.set_item("order", order.clone())?;
+            rejection.set_item("reason", "Invalid quantity: must be positive")?;
+            rejected.append(rejection)?;
+            continue;
+        }
+
+        let order_value = quantity * price;
+
+        if side == "buy" {
+            // Check 1: Sufficient cleared balance
+            let available_balance = cleared_balance - cumulative_buy_value;
+            if order_value > available_balance {
+                let rejection = PyDict::new(py);
+                rejection.set_item("order", order.clone())?;
+                rejection.set_item(
+                    "reason",
+                    format!(
+                        "Insufficient balance: need ${:.2}, have ${:.2}",
+                        order_value, available_balance
+                    ),
+                )?;
+                rejected.append(rejection)?;
+                continue;
+            }
+
+            // Check 2: Max position size
+            if let Some(max_size) = max_position_size {
+                // Calculate current position value + order value
+                let current_pos_value = if let Some(pos_obj) = positions.get_item(&symbol)? {
+                    let pos: Bound<'_, PyDict> = pos_obj.cast::<PyDict>()?.clone();
+                    let pos_qty: f64 = pos
+                        .get_item("quantity")?
+                        .map(|v| v.extract())
+                        .unwrap_or(Ok(0.0))?;
+                    pos_qty * price
+                } else {
+                    0.0
+                };
+
+                if current_pos_value + order_value > max_size {
+                    let rejection = PyDict::new(py);
+                    rejection.set_item("order", order.clone())?;
+                    rejection.set_item(
+                        "reason",
+                        format!(
+                            "Would exceed max position size ${:.2} (current: ${:.2}, order: ${:.2})",
+                            max_size, current_pos_value, order_value
+                        ),
+                    )?;
+                    rejected.append(rejection)?;
+                    continue;
+                }
+            }
+
+            // Check 3: Max leverage
+            // At 1x leverage: you can only buy with your cash (no borrowing)
+            // At 2x leverage: you can buy up to 2x your cash (borrowing 100%)
+            // Formula: cumulative_buy_value + order_value <= cleared_balance * max_leverage
+            if max_leverage > 0.0 {
+                let max_buying_power = cleared_balance * max_leverage;
+                let new_cumulative_buy = cumulative_buy_value + order_value;
+
+                if new_cumulative_buy > max_buying_power {
+                    let rejection = PyDict::new(py);
+                    rejection.set_item("order", order.clone())?;
+                    rejection.set_item(
+                        "reason",
+                        format!(
+                            "Would exceed max leverage {:.1}x (buying ${:.2} > limit ${:.2})",
+                            max_leverage, new_cumulative_buy, max_buying_power
+                        ),
+                    )?;
+                    rejected.append(rejection)?;
+                    continue;
+                }
+            }
+
+            // Order passes all checks
+            cumulative_buy_value += order_value;
+            accepted.append(order)?;
+        } else if side == "sell" {
+            // Check: Sufficient position to sell
+            let current_quantity = if let Some(pos_obj) = positions.get_item(&symbol)? {
+                let pos: Bound<'_, PyDict> = pos_obj.cast::<PyDict>()?.clone();
+                pos.get_item("quantity")?
+                    .map(|v| v.extract())
+                    .unwrap_or(Ok(0.0))?
+            } else {
+                0.0
+            };
+
+            if quantity > current_quantity {
+                let rejection = PyDict::new(py);
+                rejection.set_item("order", order.clone())?;
+                rejection.set_item(
+                    "reason",
+                    format!(
+                        "Insufficient position: trying to sell {:.2}, have {:.2}",
+                        quantity, current_quantity
+                    ),
+                )?;
+                rejected.append(rejection)?;
+                continue;
+            }
+
+            // Sell order passes
+            accepted.append(order)?;
+        } else {
+            // Unknown side
+            let rejection = PyDict::new(py);
+            rejection.set_item("order", order.clone())?;
+            rejection.set_item("reason", format!("Unknown order side: {}", side))?;
+            rejected.append(rejection)?;
+        }
+    }
+
+    Ok((accepted.unbind(), rejected.unbind()))
+}
+
+// ===========================================================================
 // Execution Engine Functions
 // ===========================================================================
 
@@ -1236,6 +1447,241 @@ fn compute_run_metrics(
     result.set_item("win_rate", py.None())?; // Would need trade-level data
 
     Ok(result.unbind())
+}
+
+// ===========================================================================
+// Run Storage Functions
+// ===========================================================================
+
+/// Get the base directory for run storage.
+fn get_runs_dir() -> PyResult<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| StorageError::new_err("Could not determine home directory"))?;
+    Ok(home.join(".trading").join("runs"))
+}
+
+/// Get the directory for a specific run.
+fn get_run_dir(run_id: &str) -> PyResult<PathBuf> {
+    Ok(get_runs_dir()?.join(run_id))
+}
+
+/// Store the results of a training run.
+///
+/// Creates the following files in ~/.trading/runs/{run_id}/:
+/// - config.json: Training configuration
+/// - metrics.json: Computed run metrics
+/// - executions.json: List of all executions
+/// - equity_history.json: Equity over time
+/// - summary.json: Quick summary for listing
+///
+/// Args:
+///     run_id: Unique identifier for the run
+///     config_json: JSON string of the training configuration
+///     metrics_json: JSON string of the run metrics
+///     executions_json: JSON string of the executions list
+///     equity_history_json: JSON string of equity history
+///     final_equity: Final equity value
+///     num_trades: Number of trades executed
+#[pyfunction]
+fn store_run_results(
+    run_id: String,
+    config_json: String,
+    metrics_json: String,
+    executions_json: String,
+    equity_history_json: String,
+    final_equity: f64,
+    num_trades: i64,
+) -> PyResult<()> {
+    let run_dir = get_run_dir(&run_id)?;
+
+    // Create run directory
+    fs::create_dir_all(&run_dir)
+        .map_err(|e| StorageError::new_err(format!("Failed to create run directory: {}", e)))?;
+
+    // Write config
+    let config_path = run_dir.join("config.json");
+    fs::write(&config_path, &config_json)
+        .map_err(|e| StorageError::new_err(format!("Failed to write config: {}", e)))?;
+
+    // Write metrics
+    let metrics_path = run_dir.join("metrics.json");
+    fs::write(&metrics_path, &metrics_json)
+        .map_err(|e| StorageError::new_err(format!("Failed to write metrics: {}", e)))?;
+
+    // Write executions
+    let executions_path = run_dir.join("executions.json");
+    fs::write(&executions_path, &executions_json)
+        .map_err(|e| StorageError::new_err(format!("Failed to write executions: {}", e)))?;
+
+    // Write equity history
+    let equity_path = run_dir.join("equity_history.json");
+    fs::write(&equity_path, &equity_history_json)
+        .map_err(|e| StorageError::new_err(format!("Failed to write equity history: {}", e)))?;
+
+    // Write summary for quick listing
+    let summary = format!(
+        r#"{{"run_id":"{}","final_equity":{},"num_trades":{},"created_at":"{}"}}"#,
+        run_id,
+        final_equity,
+        num_trades,
+        chrono::Utc::now().to_rfc3339()
+    );
+    let summary_path = run_dir.join("summary.json");
+    fs::write(&summary_path, &summary)
+        .map_err(|e| StorageError::new_err(format!("Failed to write summary: {}", e)))?;
+
+    Ok(())
+}
+
+/// Load the results of a training run.
+///
+/// Args:
+///     run_id: Unique identifier for the run
+///
+/// Returns:
+///     Dictionary with config, metrics, executions, equity_history, summary
+#[pyfunction]
+fn load_run_results(py: Python<'_>, run_id: String) -> PyResult<Py<PyDict>> {
+    let run_dir = get_run_dir(&run_id)?;
+
+    if !run_dir.exists() {
+        return Err(StorageError::new_err(format!("Run not found: {}", run_id)));
+    }
+
+    let result = PyDict::new(py);
+
+    // Load config
+    let config_path = run_dir.join("config.json");
+    if config_path.exists() {
+        let config_str = fs::read_to_string(&config_path)
+            .map_err(|e| StorageError::new_err(format!("Failed to read config: {}", e)))?;
+        let json_module = py.import("json")?;
+        let config = json_module.call_method1("loads", (config_str,))?;
+        result.set_item("config", config)?;
+    }
+
+    // Load metrics
+    let metrics_path = run_dir.join("metrics.json");
+    if metrics_path.exists() {
+        let metrics_str = fs::read_to_string(&metrics_path)
+            .map_err(|e| StorageError::new_err(format!("Failed to read metrics: {}", e)))?;
+        let json_module = py.import("json")?;
+        let metrics = json_module.call_method1("loads", (metrics_str,))?;
+        result.set_item("metrics", metrics)?;
+    }
+
+    // Load executions
+    let executions_path = run_dir.join("executions.json");
+    if executions_path.exists() {
+        let executions_str = fs::read_to_string(&executions_path)
+            .map_err(|e| StorageError::new_err(format!("Failed to read executions: {}", e)))?;
+        let json_module = py.import("json")?;
+        let executions = json_module.call_method1("loads", (executions_str,))?;
+        result.set_item("executions", executions)?;
+    }
+
+    // Load equity history
+    let equity_path = run_dir.join("equity_history.json");
+    if equity_path.exists() {
+        let equity_str = fs::read_to_string(&equity_path)
+            .map_err(|e| StorageError::new_err(format!("Failed to read equity history: {}", e)))?;
+        let json_module = py.import("json")?;
+        let equity = json_module.call_method1("loads", (equity_str,))?;
+        result.set_item("equity_history", equity)?;
+    }
+
+    // Load summary
+    let summary_path = run_dir.join("summary.json");
+    if summary_path.exists() {
+        let summary_str = fs::read_to_string(&summary_path)
+            .map_err(|e| StorageError::new_err(format!("Failed to read summary: {}", e)))?;
+        let json_module = py.import("json")?;
+        let summary = json_module.call_method1("loads", (summary_str,))?;
+        result.set_item("summary", summary)?;
+    }
+
+    Ok(result.unbind())
+}
+
+/// List all available run IDs.
+///
+/// Returns:
+///     List of run ID strings, sorted by creation time (newest first)
+#[pyfunction]
+fn list_runs(py: Python<'_>) -> PyResult<Py<PyList>> {
+    let runs_dir = get_runs_dir()?;
+    let mut runs: Vec<(String, String)> = Vec::new();
+
+    if runs_dir.exists() && runs_dir.is_dir() {
+        for entry in fs::read_dir(&runs_dir)
+            .map_err(|e| StorageError::new_err(format!("Failed to read runs directory: {}", e)))?
+        {
+            let entry = entry
+                .map_err(|e| StorageError::new_err(format!("Failed to read directory entry: {}", e)))?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                let run_id = path.file_name().unwrap().to_string_lossy().into_owned();
+
+                // Check for summary.json to verify it's a valid run
+                let summary_path = path.join("summary.json");
+                if summary_path.exists() {
+                    // Read created_at from summary for sorting
+                    if let Ok(summary_str) = fs::read_to_string(&summary_path) {
+                        // Simple JSON parsing for created_at
+                        if let Some(start) = summary_str.find("\"created_at\":\"") {
+                            let start = start + 14;
+                            if let Some(end) = summary_str[start..].find('"') {
+                                let created_at = summary_str[start..start + end].to_string();
+                                runs.push((run_id, created_at));
+                                continue;
+                            }
+                        }
+                    }
+                    // Fallback if created_at not found
+                    runs.push((run_id, String::new()));
+                }
+            }
+        }
+    }
+
+    // Sort by created_at descending (newest first)
+    runs.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let run_ids: Vec<String> = runs.into_iter().map(|(id, _)| id).collect();
+    Ok(PyList::new(py, &run_ids)?.unbind())
+}
+
+/// Check if a run exists.
+///
+/// Args:
+///     run_id: Unique identifier for the run
+///
+/// Returns:
+///     True if run exists, False otherwise
+#[pyfunction]
+fn run_exists(run_id: String) -> PyResult<bool> {
+    let run_dir = get_run_dir(&run_id)?;
+    let summary_path = run_dir.join("summary.json");
+    Ok(run_dir.exists() && summary_path.exists())
+}
+
+/// Delete a run and all its artifacts.
+///
+/// Args:
+///     run_id: Unique identifier for the run
+#[pyfunction]
+fn delete_run(run_id: String) -> PyResult<()> {
+    let run_dir = get_run_dir(&run_id)?;
+
+    if !run_dir.exists() {
+        return Err(StorageError::new_err(format!("Run not found: {}", run_id)));
+    }
+
+    fs::remove_dir_all(&run_dir)
+        .map_err(|e| StorageError::new_err(format!("Failed to delete run: {}", e)))?;
+
+    Ok(())
 }
 
 #[cfg(test)]
