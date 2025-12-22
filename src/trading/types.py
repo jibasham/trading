@@ -166,10 +166,15 @@ class RunMetrics(FrozenModel):
     :param run_id: Identifier for the run these metrics belong to.
     :param total_return: Total return as a decimal (0.10 = 10%).
     :param max_drawdown: Maximum drawdown as a decimal.
-    :param volatility: Return volatility.
+    :param volatility: Return volatility (standard deviation of returns).
     :param sharpe_ratio: Risk-adjusted return ratio, or None if not computable.
+    :param sortino_ratio: Downside risk-adjusted return, or None if not computable.
     :param num_trades: Total number of executed trades.
     :param win_rate: Fraction of profitable trades, or None if no trades.
+    :param avg_win: Average profit on winning trades, or None if no wins.
+    :param avg_loss: Average loss on losing trades (positive value), or None if no losses.
+    :param profit_factor: Gross profit / gross loss, or None if not computable.
+    :param expectancy: Expected value per trade, or None if not computable.
     """
 
     run_id: RunId
@@ -177,8 +182,13 @@ class RunMetrics(FrozenModel):
     max_drawdown: float
     volatility: float
     sharpe_ratio: float | None
+    sortino_ratio: float | None = None
     num_trades: int
     win_rate: float | None
+    avg_win: float | None = None
+    avg_loss: float | None = None
+    profit_factor: float | None = None
+    expectancy: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +251,11 @@ class Execution(FrozenModel):
     :param symbol: Market symbol traded.
     :param side: Trade direction.
     :param quantity: Quantity executed.
-    :param price: Execution price.
+    :param price: Execution price (after slippage).
     :param timestamp: When the execution occurred.
     :param order_id: Identifier of the originating order.
+    :param commission: Commission paid for this trade.
+    :param slippage_pct: Slippage percentage applied.
     """
 
     symbol: Symbol
@@ -252,6 +264,8 @@ class Execution(FrozenModel):
     price: float
     timestamp: datetime
     order_id: str
+    commission: float = 0.0
+    slippage_pct: float = 0.0
 
 
 # ---------------------------------------------------------------------------

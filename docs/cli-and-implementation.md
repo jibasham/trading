@@ -2801,4 +2801,59 @@ Add to `rust/Cargo.toml`:
 
 ---
 
+## 16. Implementation Status
+
+This section tracks the implementation progress of major system components.
+
+### 16.1 Completed Features
+
+| Component | Status | Test Coverage |
+|-----------|--------|---------------|
+| **Data Pipeline** | | |
+| Data normalization (`normalize_bars`) | ✅ Complete | 20 tests |
+| Data validation (`validate_bars`) | ✅ Complete | 11 tests |
+| Gap detection/filling | ✅ Complete | Integrated |
+| Dataset storage (Parquet I/O) | ✅ Complete | 16 tests |
+| Yahoo Finance data source | ✅ Complete | 25 tests |
+| Local/CSV data sources | ✅ Complete | Integrated |
+| **Account Management** | | |
+| Account equity calculation | ✅ Complete | 8 tests |
+| Transaction clearing | ✅ Complete | 3 tests |
+| Fund reservation | ✅ Complete | 3 tests |
+| Business day calculation | ✅ Complete | 4 tests |
+| **Strategy Engine** | | |
+| Strategy base class | ✅ Complete | Core module |
+| Example strategies (5 types) | ✅ Complete | Validated |
+| Position sizing (6 algorithms) | ✅ Complete | 26 tests |
+| Multi-strategy comparison | ✅ Complete | 6 tests |
+| **Execution & Metrics** | | |
+| Order execution engine | ✅ Complete | 17 tests |
+| Risk constraints | ✅ Complete | 21 tests |
+| Metrics computation | ✅ Complete | Integrated |
+| Advanced metrics (Sortino, win rate, etc.) | ✅ Complete | Integrated |
+| **Run Management** | | |
+| Run storage (Rust) | ✅ Complete | 14 tests |
+| Checkpointing/resume | ✅ Complete | 10 tests |
+| Config-driven execution | ✅ Complete | 34 tests |
+| **CLI** | | |
+| `fetch-data` command | ✅ Complete | Tested |
+| `run-training` command | ✅ Complete | Tested |
+| `inspect-run` command | ✅ Complete | Tested |
+| `compare` command | ✅ Complete | Tested |
+
+**Total Tests**: 241 passing
+
+### 16.2 Pending Features
+
+| Component | Priority | Notes |
+|-----------|----------|-------|
+| Live/paper trading (Alpaca) | High | Next major milestone |
+| Strategy optimization (grid search) | High | Parameter tuning |
+| Event-driven architecture | Medium | Real-time data |
+| Portfolio-level allocation | Medium | Multi-strategy capital |
+| Slippage/commission modeling | Medium | Realistic execution |
+| ML/RL Gym environment | Low | RL integration |
+
+---
+
 This specification provides complete function-level details for implementing the trading bot system. Each function can be implemented independently by a low-parameter-count AI agent given this specification and the type definitions.

@@ -49,6 +49,17 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_runs, m)?)?;
     m.add_function(wrap_pyfunction!(run_exists, m)?)?;
     m.add_function(wrap_pyfunction!(delete_run, m)?)?;
+    m.add_function(wrap_pyfunction!(save_checkpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(load_checkpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(checkpoint_exists, m)?)?;
+    // Paper trading
+    m.add_function(wrap_pyfunction!(save_paper_account, m)?)?;
+    m.add_function(wrap_pyfunction!(load_paper_account, m)?)?;
+    m.add_function(wrap_pyfunction!(paper_account_exists, m)?)?;
+    m.add_function(wrap_pyfunction!(list_paper_accounts, m)?)?;
+    m.add_function(wrap_pyfunction!(delete_paper_account, m)?)?;
+    m.add_function(wrap_pyfunction!(append_paper_order, m)?)?;
+    m.add_function(wrap_pyfunction!(load_paper_orders, m)?)?;
     Ok(())
 }
 
@@ -1219,8 +1230,12 @@ fn execute_orders(
     bars: &Bound<'_, PyDict>,
     account: &Bound<'_, PyDict>,
     timestamp: &Bound<'_, PyAny>,
+    commission_per_trade: Option<f64>,
+    slippage_pct: Option<f64>,
 ) -> PyResult<Py<PyList>> {
     let executions = PyList::empty(py);
+    let commission = commission_per_trade.unwrap_or(0.0);
+    let slippage = slippage_pct.unwrap_or(0.0);
 
     for order_obj in orders.iter() {
         let order: Bound<'_, PyDict> = order_obj.cast::<PyDict>()?.clone();
@@ -1247,12 +1262,19 @@ fn execute_orders(
             .ok_or_else(|| AccountError::new_err(format!("no bar data for symbol {}", symbol)))?;
 
         let bar_dict: Bound<'_, PyDict> = bar.cast::<PyDict>()?.clone();
-        let price: f64 = bar_dict
+        let base_price: f64 = bar_dict
             .get_item("close")?
             .ok_or_else(|| AccountError::new_err("bar missing close price"))?
             .extract()?;
 
-        // Calculate execution value
+        // Apply slippage: increase price for buys, decrease for sells
+        let price = if side == "buy" {
+            base_price * (1.0 + slippage)
+        } else {
+            base_price * (1.0 - slippage)
+        };
+
+        // Calculate execution value (price after slippage)
         let value = quantity * price;
 
         // Update account based on side
@@ -1267,14 +1289,15 @@ fn execute_orders(
         let positions: Bound<'_, PyDict> = positions_obj.cast::<PyDict>()?.clone();
 
         if side == "buy" {
-            // Check if we have enough funds
-            if value > cleared_balance {
+            // Check if we have enough funds (including commission)
+            let total_cost = value + commission;
+            if total_cost > cleared_balance {
                 // Skip this order - insufficient funds
                 continue;
             }
 
-            // Deduct from balance
-            account.set_item("cleared_balance", cleared_balance - value)?;
+            // Deduct from balance (value + commission)
+            account.set_item("cleared_balance", cleared_balance - total_cost)?;
 
             // Update or create position
             if let Some(pos_obj) = positions.get_item(&symbol)? {
@@ -1317,8 +1340,9 @@ fn execute_orders(
                     continue;
                 }
 
-                // Add to balance
-                account.set_item("cleared_balance", cleared_balance + value)?;
+                // Add to balance (value - commission)
+                let net_proceeds = value - commission;
+                account.set_item("cleared_balance", cleared_balance + net_proceeds)?;
 
                 // Update position
                 let new_qty = current_qty - quantity;
@@ -1342,6 +1366,8 @@ fn execute_orders(
         execution.set_item("price", price)?;
         execution.set_item("value", value)?;
         execution.set_item("timestamp", timestamp)?;
+        execution.set_item("commission", commission)?;
+        execution.set_item("slippage_pct", slippage)?;
 
         executions.append(execution)?;
     }
@@ -1359,15 +1385,18 @@ fn execute_orders(
 ///     equity_history: List of (timestamp, equity) tuples in chronological order
 ///     initial_equity: Starting equity value
 ///     num_trades: Total number of trades executed
+///     trade_pnls: Optional list of P&L values per round-trip trade
 ///
 /// Returns:
-///     Dict with total_return, max_drawdown, volatility, sharpe_ratio, num_trades, win_rate
+///     Dict with comprehensive metrics including win_rate, sortino_ratio, avg_win, avg_loss
 #[pyfunction]
+#[pyo3(signature = (equity_history, initial_equity, num_trades, trade_pnls=None))]
 fn compute_run_metrics(
     py: Python<'_>,
     equity_history: &Bound<'_, PyList>,
     initial_equity: f64,
     num_trades: i64,
+    trade_pnls: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Py<PyDict>> {
     let result = PyDict::new(py);
 
@@ -1376,8 +1405,13 @@ fn compute_run_metrics(
         result.set_item("max_drawdown", 0.0)?;
         result.set_item("volatility", 0.0)?;
         result.set_item("sharpe_ratio", py.None())?;
+        result.set_item("sortino_ratio", py.None())?;
         result.set_item("num_trades", num_trades)?;
         result.set_item("win_rate", py.None())?;
+        result.set_item("avg_win", py.None())?;
+        result.set_item("avg_loss", py.None())?;
+        result.set_item("profit_factor", py.None())?;
+        result.set_item("expectancy", py.None())?;
         return Ok(result.unbind());
     }
 
@@ -1417,23 +1451,104 @@ fn compute_run_metrics(
     }
 
     // Calculate volatility (standard deviation of returns)
+    let mean_return = if !returns.is_empty() {
+        returns.iter().sum::<f64>() / returns.len() as f64
+    } else {
+        0.0
+    };
+
     let volatility = if returns.len() > 1 {
-        let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-        let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
+        let variance = returns.iter().map(|r| (r - mean_return).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
         variance.sqrt()
+    } else {
+        0.0
+    };
+
+    // Calculate downside deviation for Sortino ratio
+    let downside_returns: Vec<f64> = returns.iter().filter(|&&r| r < 0.0).copied().collect();
+    let downside_deviation = if downside_returns.len() > 1 {
+        let variance = downside_returns.iter().map(|r| r.powi(2)).sum::<f64>() / downside_returns.len() as f64;
+        variance.sqrt()
+    } else if !downside_returns.is_empty() {
+        downside_returns[0].abs()
     } else {
         0.0
     };
 
     // Calculate Sharpe ratio (assuming 0 risk-free rate for simplicity)
     let sharpe_ratio = if volatility > 0.0 && returns.len() > 1 {
-        let mean_return = returns.iter().sum::<f64>() / returns.len() as f64;
         // Annualize: assuming daily data, multiply by sqrt(252)
         let annualized_return = mean_return * 252.0;
         let annualized_vol = volatility * (252.0_f64).sqrt();
         Some(annualized_return / annualized_vol)
     } else {
         None
+    };
+
+    // Calculate Sortino ratio (uses downside deviation instead of volatility)
+    let sortino_ratio = if downside_deviation > 0.0 && returns.len() > 1 {
+        let annualized_return = mean_return * 252.0;
+        let annualized_downside = downside_deviation * (252.0_f64).sqrt();
+        Some(annualized_return / annualized_downside)
+    } else {
+        None
+    };
+
+    // Calculate trade-level metrics if P&L data is provided
+    let (win_rate, avg_win, avg_loss, profit_factor, expectancy) = if let Some(pnls) = trade_pnls {
+        let mut wins: Vec<f64> = Vec::new();
+        let mut losses: Vec<f64> = Vec::new();
+
+        for pnl_obj in pnls.iter() {
+            let pnl: f64 = pnl_obj.extract()?;
+            if pnl > 0.0 {
+                wins.push(pnl);
+            } else if pnl < 0.0 {
+                losses.push(pnl.abs());
+            }
+        }
+
+        let total_trades = wins.len() + losses.len();
+        let win_rate = if total_trades > 0 {
+            Some(wins.len() as f64 / total_trades as f64)
+        } else {
+            None
+        };
+
+        let avg_win = if !wins.is_empty() {
+            Some(wins.iter().sum::<f64>() / wins.len() as f64)
+        } else {
+            None
+        };
+
+        let avg_loss = if !losses.is_empty() {
+            Some(losses.iter().sum::<f64>() / losses.len() as f64)
+        } else {
+            None
+        };
+
+        let total_wins: f64 = wins.iter().sum();
+        let total_losses: f64 = losses.iter().sum();
+        let profit_factor = if total_losses > 0.0 {
+            Some(total_wins / total_losses)
+        } else if total_wins > 0.0 {
+            Some(f64::INFINITY)
+        } else {
+            None
+        };
+
+        // Expectancy = (Win Rate × Avg Win) - (Loss Rate × Avg Loss)
+        let expectancy = match (win_rate, avg_win, avg_loss) {
+            (Some(wr), Some(aw), Some(al)) => {
+                Some(wr * aw - (1.0 - wr) * al)
+            }
+            (Some(wr), Some(aw), None) => Some(wr * aw),
+            _ => None,
+        };
+
+        (win_rate, avg_win, avg_loss, profit_factor, expectancy)
+    } else {
+        (None, None, None, None, None)
     };
 
     result.set_item("total_return", total_return)?;
@@ -1443,8 +1558,31 @@ fn compute_run_metrics(
         Some(sr) => result.set_item("sharpe_ratio", sr)?,
         None => result.set_item("sharpe_ratio", py.None())?,
     }
+    match sortino_ratio {
+        Some(sr) => result.set_item("sortino_ratio", sr)?,
+        None => result.set_item("sortino_ratio", py.None())?,
+    }
     result.set_item("num_trades", num_trades)?;
-    result.set_item("win_rate", py.None())?; // Would need trade-level data
+    match win_rate {
+        Some(wr) => result.set_item("win_rate", wr)?,
+        None => result.set_item("win_rate", py.None())?,
+    }
+    match avg_win {
+        Some(aw) => result.set_item("avg_win", aw)?,
+        None => result.set_item("avg_win", py.None())?,
+    }
+    match avg_loss {
+        Some(al) => result.set_item("avg_loss", al)?,
+        None => result.set_item("avg_loss", py.None())?,
+    }
+    match profit_factor {
+        Some(pf) if pf.is_finite() => result.set_item("profit_factor", pf)?,
+        _ => result.set_item("profit_factor", py.None())?,
+    }
+    match expectancy {
+        Some(e) => result.set_item("expectancy", e)?,
+        None => result.set_item("expectancy", py.None())?,
+    }
 
     Ok(result.unbind())
 }
@@ -1682,6 +1820,293 @@ fn delete_run(run_id: String) -> PyResult<()> {
         .map_err(|e| StorageError::new_err(format!("Failed to delete run: {}", e)))?;
 
     Ok(())
+}
+
+// ===========================================================================
+// Checkpointing Functions
+// ===========================================================================
+
+/// Get the checkpoint directory for a run.
+fn get_checkpoint_dir(run_id: &str) -> PyResult<PathBuf> {
+    Ok(get_runs_dir()?.join(run_id).join("checkpoints"))
+}
+
+/// Save a checkpoint of the current training state.
+///
+/// Saves the current state to allow resuming interrupted training.
+///
+/// Args:
+///     run_id: Unique identifier for the run
+///     step_index: Current step/timestamp index
+///     state_json: JSON string containing serialized state
+///
+/// Returns:
+///     Path to the checkpoint file
+#[pyfunction]
+fn save_checkpoint(run_id: String, step_index: i64, state_json: String) -> PyResult<String> {
+    let checkpoint_dir = get_checkpoint_dir(&run_id)?;
+
+    // Create checkpoint directory
+    fs::create_dir_all(&checkpoint_dir)
+        .map_err(|e| StorageError::new_err(format!("Failed to create checkpoint directory: {}", e)))?;
+
+    // Write checkpoint file
+    let checkpoint_file = checkpoint_dir.join(format!("checkpoint_{:08}.json", step_index));
+    fs::write(&checkpoint_file, &state_json)
+        .map_err(|e| StorageError::new_err(format!("Failed to write checkpoint: {}", e)))?;
+
+    // Write latest pointer
+    let latest_file = checkpoint_dir.join("latest");
+    fs::write(&latest_file, format!("{}", step_index))
+        .map_err(|e| StorageError::new_err(format!("Failed to write latest pointer: {}", e)))?;
+
+    Ok(checkpoint_file.to_string_lossy().into_owned())
+}
+
+/// Load the latest checkpoint for a run.
+///
+/// Args:
+///     run_id: Unique identifier for the run
+///
+/// Returns:
+///     Tuple of (step_index, state_json) or None if no checkpoint exists
+#[pyfunction]
+fn load_checkpoint(py: Python<'_>, run_id: String) -> PyResult<Py<PyAny>> {
+    let checkpoint_dir = get_checkpoint_dir(&run_id)?;
+    let latest_file = checkpoint_dir.join("latest");
+
+    if !latest_file.exists() {
+        return Ok(py.None());
+    }
+
+    // Read latest step index
+    let step_str = fs::read_to_string(&latest_file)
+        .map_err(|e| StorageError::new_err(format!("Failed to read latest pointer: {}", e)))?;
+    let step_index: i64 = step_str.trim().parse()
+        .map_err(|e| StorageError::new_err(format!("Invalid step index: {}", e)))?;
+
+    // Read checkpoint file
+    let checkpoint_file = checkpoint_dir.join(format!("checkpoint_{:08}.json", step_index));
+    if !checkpoint_file.exists() {
+        return Err(StorageError::new_err(format!(
+            "Checkpoint file not found for step {}", step_index
+        )));
+    }
+
+    let state_json = fs::read_to_string(&checkpoint_file)
+        .map_err(|e| StorageError::new_err(format!("Failed to read checkpoint: {}", e)))?;
+
+    // Return tuple of (step_index, state_json)
+    let result = pyo3::types::PyTuple::new(py, &[
+        step_index.into_pyobject(py)?.into_any(),
+        state_json.into_pyobject(py)?.into_any(),
+    ])?;
+    Ok(result.into())
+}
+
+/// Check if a checkpoint exists for a run.
+///
+/// Args:
+///     run_id: Unique identifier for the run
+///
+/// Returns:
+///     True if a checkpoint exists, False otherwise
+#[pyfunction]
+fn checkpoint_exists(run_id: String) -> PyResult<bool> {
+    let checkpoint_dir = get_checkpoint_dir(&run_id)?;
+    let latest_file = checkpoint_dir.join("latest");
+    Ok(latest_file.exists())
+}
+
+// ===========================================================================
+// Paper Trading Account Persistence
+// ===========================================================================
+
+/// Get the base directory for paper trading accounts.
+fn get_paper_accounts_dir() -> PyResult<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| StorageError::new_err("Could not determine home directory"))?;
+    Ok(home.join(".trading").join("paper"))
+}
+
+/// Get the directory for a specific paper account.
+fn get_paper_account_dir(account_id: &str) -> PyResult<PathBuf> {
+    Ok(get_paper_accounts_dir()?.join(account_id))
+}
+
+/// Save a paper trading account to disk.
+///
+/// Persists the account state so it survives between sessions.
+///
+/// Args:
+///     account_id: Unique identifier for the account
+///     account_json: JSON string of the account state
+///
+/// Returns:
+///     Path to the saved account file
+#[pyfunction]
+fn save_paper_account(account_id: String, account_json: String) -> PyResult<String> {
+    let account_dir = get_paper_account_dir(&account_id)?;
+
+    // Create directory
+    fs::create_dir_all(&account_dir)
+        .map_err(|e| StorageError::new_err(format!("Failed to create account directory: {}", e)))?;
+
+    // Write account state
+    let account_file = account_dir.join("account.json");
+    fs::write(&account_file, &account_json)
+        .map_err(|e| StorageError::new_err(format!("Failed to save account: {}", e)))?;
+
+    // Write timestamp
+    let meta_file = account_dir.join("meta.json");
+    let meta = format!(
+        r#"{{"updated_at": "{}", "account_id": "{}"}}"#,
+        chrono::Utc::now().to_rfc3339(),
+        account_id
+    );
+    fs::write(&meta_file, meta)
+        .map_err(|e| StorageError::new_err(format!("Failed to save metadata: {}", e)))?;
+
+    Ok(account_file.to_string_lossy().into_owned())
+}
+
+/// Load a paper trading account from disk.
+///
+/// Args:
+///     account_id: Unique identifier for the account
+///
+/// Returns:
+///     JSON string of the account state, or None if not found
+#[pyfunction]
+fn load_paper_account(py: Python<'_>, account_id: String) -> PyResult<Py<PyAny>> {
+    let account_dir = get_paper_account_dir(&account_id)?;
+    let account_file = account_dir.join("account.json");
+
+    if !account_file.exists() {
+        return Ok(py.None());
+    }
+
+    let account_json = fs::read_to_string(&account_file)
+        .map_err(|e| StorageError::new_err(format!("Failed to load account: {}", e)))?;
+
+    Ok(account_json.into_pyobject(py)?.into_any().unbind())
+}
+
+/// Check if a paper trading account exists.
+///
+/// Args:
+///     account_id: Unique identifier for the account
+///
+/// Returns:
+///     True if the account exists, False otherwise
+#[pyfunction]
+fn paper_account_exists(account_id: String) -> PyResult<bool> {
+    let account_dir = get_paper_account_dir(&account_id)?;
+    let account_file = account_dir.join("account.json");
+    Ok(account_file.exists())
+}
+
+/// List all paper trading accounts.
+///
+/// Returns:
+///     List of account IDs
+#[pyfunction]
+fn list_paper_accounts() -> PyResult<Vec<String>> {
+    let accounts_dir = get_paper_accounts_dir()?;
+
+    if !accounts_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut accounts = Vec::new();
+    for entry in fs::read_dir(&accounts_dir)
+        .map_err(|e| StorageError::new_err(format!("Failed to read accounts directory: {}", e)))?
+    {
+        let entry = entry
+            .map_err(|e| StorageError::new_err(format!("Failed to read entry: {}", e)))?;
+        if entry.path().is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
+                accounts.push(name.to_string());
+            }
+        }
+    }
+
+    accounts.sort();
+    Ok(accounts)
+}
+
+/// Delete a paper trading account.
+///
+/// Args:
+///     account_id: Unique identifier for the account
+#[pyfunction]
+fn delete_paper_account(account_id: String) -> PyResult<()> {
+    let account_dir = get_paper_account_dir(&account_id)?;
+
+    if !account_dir.exists() {
+        return Err(StorageError::new_err(format!("Account not found: {}", account_id)));
+    }
+
+    fs::remove_dir_all(&account_dir)
+        .map_err(|e| StorageError::new_err(format!("Failed to delete account: {}", e)))?;
+
+    Ok(())
+}
+
+/// Append an order to the paper account's order log.
+///
+/// Args:
+///     account_id: Unique identifier for the account
+///     order_json: JSON string of the order/execution
+#[pyfunction]
+fn append_paper_order(account_id: String, order_json: String) -> PyResult<()> {
+    let account_dir = get_paper_account_dir(&account_id)?;
+
+    // Ensure directory exists
+    fs::create_dir_all(&account_dir)
+        .map_err(|e| StorageError::new_err(format!("Failed to create account directory: {}", e)))?;
+
+    // Append to orders log (newline-delimited JSON)
+    let orders_file = account_dir.join("orders.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&orders_file)
+        .map_err(|e| StorageError::new_err(format!("Failed to open orders log: {}", e)))?;
+
+    use std::io::Write;
+    writeln!(file, "{}", order_json)
+        .map_err(|e| StorageError::new_err(format!("Failed to append order: {}", e)))?;
+
+    Ok(())
+}
+
+/// Load all orders from a paper account's order log.
+///
+/// Args:
+///     account_id: Unique identifier for the account
+///
+/// Returns:
+///     List of JSON strings, one per order
+#[pyfunction]
+fn load_paper_orders(account_id: String) -> PyResult<Vec<String>> {
+    let account_dir = get_paper_account_dir(&account_id)?;
+    let orders_file = account_dir.join("orders.jsonl");
+
+    if !orders_file.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(&orders_file)
+        .map_err(|e| StorageError::new_err(format!("Failed to read orders: {}", e)))?;
+
+    let orders: Vec<String> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.to_string())
+        .collect();
+
+    Ok(orders)
 }
 
 #[cfg(test)]

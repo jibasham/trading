@@ -32,6 +32,7 @@ class BacktestResult(BaseModel):
     :param final_account: Final account state.
     :param executions: All executions during the backtest.
     :param equity_history: List of (timestamp, equity) pairs.
+    :param trade_pnls: P&L for each closed position (round-trip trade).
     """
 
     run_id: RunId
@@ -39,6 +40,7 @@ class BacktestResult(BaseModel):
     final_account: Account
     executions: list[Execution] = Field(default_factory=list)
     equity_history: list[tuple[datetime, float]] = Field(default_factory=list)
+    trade_pnls: list[float] = Field(default_factory=list)
 
 
 class Backtest:
@@ -81,6 +83,8 @@ class Backtest:
     :param run_id: Optional run ID (auto-generated if not provided).
     :param max_position_size: Optional max position size in dollars (None = no limit).
     :param max_leverage: Max leverage allowed (default 1.0 = no leverage).
+    :param checkpoint_interval: Steps between checkpoints (None = no checkpointing).
+    :param resume: If True, attempt to resume from checkpoint.
     """
 
     def __init__(
@@ -91,6 +95,10 @@ class Backtest:
         run_id: str | None = None,
         max_position_size: float | None = None,
         max_leverage: float = 1.0,
+        checkpoint_interval: int | None = None,
+        resume: bool = False,
+        commission_per_trade: float = 0.0,
+        slippage_pct: float = 0.0,
     ) -> None:
         """Initialize backtest engine."""
         self.strategy = strategy
@@ -98,6 +106,10 @@ class Backtest:
         self.run_id = RunId(run_id or self._generate_run_id())
         self.max_position_size = max_position_size
         self.max_leverage = max_leverage
+        self.checkpoint_interval = checkpoint_interval
+        self.resume = resume
+        self.commission_per_trade = commission_per_trade
+        self.slippage_pct = slippage_pct
         self.rejected_orders: list[dict[str, Any]] = []
 
         # Convert bars to NormalizedBar if needed and organize by timestamp
@@ -154,10 +166,15 @@ class Backtest:
 
         :returns: BacktestResult with metrics and final state.
         """
+        import json
+
         from trading._core import (
             apply_risk_constraints,
+            checkpoint_exists,
             compute_run_metrics,
             execute_orders,
+            load_checkpoint,
+            save_checkpoint,
         )
 
         # Initialize account
@@ -176,12 +193,41 @@ class Backtest:
         # Track state
         all_executions: list[Execution] = []
         equity_history: list[tuple[datetime, float]] = []
+        trade_pnls: list[float] = []  # P&L for each closed position
+
+        # Track open positions for P&L calculation (symbol -> list of (quantity, entry_price))
+        open_lots: dict[str, list[tuple[float, float]]] = {}
+
+        # Resume from checkpoint if requested
+        start_step = 0
+        if self.resume and checkpoint_exists(str(self.run_id)):
+            checkpoint_data = load_checkpoint(str(self.run_id))
+            if checkpoint_data is not None:
+                step_index, state_json = checkpoint_data
+                state = json.loads(state_json)
+                start_step = step_index + 1
+                account = Account.model_validate(state["account"])
+                all_executions = [
+                    Execution.model_validate(e) for e in state["executions"]
+                ]
+                equity_history = [
+                    (datetime.fromisoformat(h["timestamp"]), h["equity"])
+                    for h in state["equity_history"]
+                ]
+                trade_pnls = state["trade_pnls"]
+                open_lots = {
+                    k: [(lot["qty"], lot["price"]) for lot in v]
+                    for k, v in state["open_lots"].items()
+                }
 
         # Notify strategy of start
         self.strategy.on_start()
 
         # Iterate through each timestamp
-        for ts in self.timestamps:
+        for step_idx, ts in enumerate(self.timestamps):
+            # Skip steps before resume point
+            if step_idx < start_step:
+                continue
             bars_at_ts = self.bars_by_timestamp[ts]
 
             # Build snapshot for strategy
@@ -245,38 +291,100 @@ class Backtest:
 
                 # Execute accepted orders
                 executions = execute_orders(
-                    accepted_orders, bars_dict, account_dict, ts
+                    accepted_orders,
+                    bars_dict,
+                    account_dict,
+                    ts,
+                    self.commission_per_trade if self.commission_per_trade > 0 else None,
+                    self.slippage_pct if self.slippage_pct > 0 else None,
                 )
 
                 # Update account from dict
                 account = Account.model_validate(account_dict)
 
-                # Record executions
+                # Record executions and track P&L
                 for i, exec_dict in enumerate(executions):
                     order_id = f"{self.run_id}-{len(all_executions) + i}"
+                    symbol = exec_dict["symbol"]
+                    side = exec_dict["side"]
+                    quantity = exec_dict["quantity"]
+                    price = exec_dict["price"]
+
                     all_executions.append(
                         Execution(
-                            symbol=Symbol(exec_dict["symbol"]),
-                            side=exec_dict["side"],
-                            quantity=exec_dict["quantity"],
-                            price=exec_dict["price"],
+                            symbol=Symbol(symbol),
+                            side=side,
+                            quantity=quantity,
+                            price=price,
                             timestamp=exec_dict["timestamp"],
                             order_id=order_id,
+                            commission=exec_dict.get("commission", 0.0),
+                            slippage_pct=exec_dict.get("slippage_pct", 0.0),
                         )
                     )
+
+                    # Track P&L using FIFO matching
+                    if side == "buy":
+                        # Add to open lots
+                        if symbol not in open_lots:
+                            open_lots[symbol] = []
+                        open_lots[symbol].append((quantity, price))
+                    elif side == "sell":
+                        # Match against open lots (FIFO)
+                        remaining_qty = quantity
+                        if symbol in open_lots:
+                            while remaining_qty > 0 and open_lots[symbol]:
+                                lot_qty, lot_price = open_lots[symbol][0]
+                                match_qty = min(remaining_qty, lot_qty)
+
+                                # Calculate P&L for this match
+                                pnl = (price - lot_price) * match_qty
+                                trade_pnls.append(pnl)
+
+                                remaining_qty -= match_qty
+                                if match_qty >= lot_qty:
+                                    open_lots[symbol].pop(0)
+                                else:
+                                    open_lots[symbol][0] = (
+                                        lot_qty - match_qty,
+                                        lot_price,
+                                    )
 
             # Calculate current equity
             equity = self._calculate_equity(account, bars_at_ts)
             equity_history.append((ts, equity))
 
+            # Save checkpoint if interval reached
+            if (
+                self.checkpoint_interval
+                and (step_idx + 1) % self.checkpoint_interval == 0
+            ):
+                checkpoint_state = {
+                    "account": account.model_dump(),
+                    "executions": [e.model_dump() for e in all_executions],
+                    "equity_history": [
+                        {"timestamp": h[0].isoformat(), "equity": h[1]}
+                        for h in equity_history
+                    ],
+                    "trade_pnls": trade_pnls,
+                    "open_lots": {
+                        k: [{"qty": lot[0], "price": lot[1]} for lot in v]
+                        for k, v in open_lots.items()
+                    },
+                }
+                save_checkpoint(
+                    str(self.run_id), step_idx, json.dumps(checkpoint_state)
+                )
+
         # Notify strategy of end
         self.strategy.on_end()
 
-        # Compute metrics
+        # Compute metrics with trade P&L data
         metrics_dict = compute_run_metrics(
             equity_history,
             self.initial_balance,
             len(all_executions),
+            trade_pnls if trade_pnls else None,
         )
 
         metrics = RunMetrics(
@@ -285,8 +393,13 @@ class Backtest:
             max_drawdown=metrics_dict["max_drawdown"],
             volatility=metrics_dict["volatility"],
             sharpe_ratio=metrics_dict.get("sharpe_ratio"),
+            sortino_ratio=metrics_dict.get("sortino_ratio"),
             num_trades=metrics_dict["num_trades"],
             win_rate=metrics_dict.get("win_rate"),
+            avg_win=metrics_dict.get("avg_win"),
+            avg_loss=metrics_dict.get("avg_loss"),
+            profit_factor=metrics_dict.get("profit_factor"),
+            expectancy=metrics_dict.get("expectancy"),
         )
 
         return BacktestResult(
@@ -295,6 +408,7 @@ class Backtest:
             final_account=account,
             executions=all_executions,
             equity_history=equity_history,
+            trade_pnls=trade_pnls,
         )
 
     def _calculate_equity(

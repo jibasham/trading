@@ -81,6 +81,77 @@ High-level responsibilities:
 - Allow multiple runs over the same dataset with different configurations (e.g., different strategies, clearing delays, or starting balances) for comparison.
 - Emit artifacts and summaries that can be used for benchmarking performance across strategies and data regimes, especially standard day-trading metrics (returns, drawdowns, risk-adjusted ratios, and trade-level statistics).
 
+### 3.6 Paper Trading Engine
+
+The paper trading engine enables forward-testing strategies against live market data using simulated accounts. Unlike backtesting (which replays historical data), paper trading operates in real-time, making actual buy/sell decisions as markets move.
+
+**Key characteristics:**
+- **Real-time execution**: Strategies receive live quotes and make decisions in real-time
+- **Simulated fills**: Orders are executed at current market prices without real money
+- **Persistent accounts**: Account state survives between sessions
+- **Same strategies**: Identical strategy code works in both backtest and paper modes
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    PaperTradingEngine                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│   ┌──────────────┐    ┌──────────────┐    ┌─────────────┐  │
+│   │ LiveQuote    │    │   Strategy   │    │ execute_    │  │
+│   │ Source       │ →  │   decide()   │ →  │ orders      │  │
+│   │ (polling)    │    │              │    │ (Rust)      │  │
+│   └──────────────┘    └──────────────┘    └─────────────┘  │
+│          │                   │                   │          │
+│          ▼                   ▼                   ▼          │
+│   ┌─────────────────────────────────────────────────────┐  │
+│   │                  Account (Rust)                      │  │
+│   │  • cleared_balance, pending_balance                  │  │
+│   │  • positions: {symbol: (quantity, cost_basis)}       │  │
+│   │  • pending_transactions                              │  │
+│   │  • Persisted to ~/.trading/paper/{account_id}/       │  │
+│   └─────────────────────────────────────────────────────┘  │
+│                              │                              │
+│                              ▼                              │
+│   ┌─────────────────────────────────────────────────────┐  │
+│   │                  Order Log                           │  │
+│   │  • All orders with timestamps                        │  │
+│   │  • Execution history                                 │  │
+│   │  • Stored for audit/analysis                         │  │
+│   └─────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**High-level responsibilities:**
+- **Live data acquisition**: Poll or stream current market prices at configurable intervals
+- **Strategy execution**: Run the same strategy interface used in backtesting against live data
+- **Order management**: Track order lifecycle (submitted → filled/rejected)
+- **Account persistence**: Save account state to disk, load on restart
+- **Session management**: Start/stop trading sessions, handle market hours
+- **Execution logging**: Record all orders and fills for later analysis
+
+**Data flow:**
+1. Engine starts, loads persisted account state (or creates new account)
+2. At each tick interval (e.g., every 5 seconds during market hours):
+   - Fetch current quotes for watched symbols
+   - Build an `AnalysisSnapshot` with current prices and account state
+   - Call `strategy.decide()` to get order requests
+   - Apply risk constraints (`apply_risk_constraints`)
+   - Execute accepted orders (`execute_orders`) at current prices
+   - Update and persist account state
+3. On shutdown, save final account state
+
+**Relationship to backtesting:**
+The paper trading engine reuses core components from the backtesting system:
+- Same `Strategy` base class and strategy implementations
+- Same `execute_orders` Rust function for order fills
+- Same `apply_risk_constraints` for risk management
+- Same `Account` type for state management
+- Same metrics computation for performance tracking
+
+This ensures that a strategy validated in backtesting behaves identically in paper trading.
+
 ## 4. Training Account System
 The training account system is a central feature in this project. It represents the primary training account, its balances, and the effect of trades over time, with a focus on configurable clearing behavior and realistic retail constraints.
 
@@ -150,14 +221,100 @@ Even in a training environment, it is useful to consider:
 - Basic user or role concepts controlling who can access which training accounts.
 - Separation of concerns between "operators" (who configure environments) and "strategies" (which operate within constraints).
 
-## 6. Future Extensions (Out of Scope for Initial Design)
-Future directions that are not detailed here but may influence architecture:
-- Multi-asset support (options, futures, crypto) beyond equities.
-- Portfolio-level optimization tools.
-- Integration with live brokerage APIs for real-money trading (e.g., supporting a live broker such as E-Trade using the same order abstraction used by the training simulator).
-- Support for multiple concurrent accounts and more complex retail-style account types, if and when needed.
+## 6. Future Extensions and Roadmap
 
-These can be layered on top of the current high-level structure as the project evolves.
+This section outlines planned extensions and future directions, organized by priority and implementation phase.
+
+### 6.1 Near-Term Priorities
+
+#### Live/Paper Trading Integration
+Connect the backtesting engine to real broker APIs for paper trading and eventually live trading:
+- **Alpaca API**: Commission-free trading with excellent API for paper trading
+- **Interactive Brokers**: Comprehensive market access for serious traders
+- **Architecture considerations**:
+  - Abstract broker interface allowing strategy code to work identically in backtest and live modes
+  - Order state synchronization between local state and broker
+  - Connection resilience and retry logic
+  - Rate limiting and API quota management
+
+#### Strategy Optimization
+Automated hyperparameter tuning and strategy discovery:
+- **Grid search**: Exhaustive parameter space exploration
+- **Random search**: Efficient sampling for high-dimensional spaces
+- **Bayesian optimization**: Sample-efficient optimization for expensive evaluations
+- **Walk-forward optimization**: Rolling window validation to prevent overfitting
+- **Multi-objective optimization**: Balance return, drawdown, and other metrics
+
+#### Event-Driven Architecture
+For real-time streaming data and low-latency execution:
+- **Event bus**: Central pub/sub system for market data, order events, and signals
+- **Async processing**: Non-blocking handlers for concurrent data streams
+- **WebSocket integration**: Real-time market data from exchanges
+- **Latency monitoring**: Track and optimize event processing times
+
+### 6.2 Medium-Term Extensions
+
+#### Portfolio-Level Allocation
+Managing multiple strategies as a unified portfolio:
+- **Capital allocation**: Dynamic allocation across strategies based on performance
+- **Correlation analysis**: Identify and manage strategy correlation
+- **Risk budgeting**: Allocate risk (not just capital) across strategies
+- **Rebalancing**: Automatic portfolio rebalancing on schedule or triggers
+
+#### Advanced Execution Modeling
+More realistic simulation of trade execution:
+- **Slippage models**: Market impact based on order size and liquidity
+- **Commission structures**: Per-share, per-trade, and tiered commission models
+- **Partial fills**: Simulate large orders filling over multiple bars
+- **Queue position**: Model order book dynamics for limit orders
+
+#### ML/RL Integration
+Deep integration with machine learning workflows:
+- **Feature engineering pipeline**: Technical indicators, market regime detection
+- **Model training hooks**: Integration with PyTorch, TensorFlow, scikit-learn
+- **Reinforcement learning**: Gym-compatible environment for RL agents
+- **Online learning**: Strategies that adapt during live trading
+
+### 6.3 Long-Term Vision
+
+#### Multi-Asset Support
+Extend beyond equities:
+- **Options**: Greeks, expiration handling, exercise/assignment
+- **Futures**: Contract specifications, rollover, margin requirements
+- **Crypto**: 24/7 markets, exchange-specific APIs
+- **Forex**: Currency pair conventions, pip calculations
+
+#### Distributed Training
+Scale training across multiple machines:
+- **Parameter sweep parallelization**: Run many backtests concurrently
+- **Distributed data storage**: Handle datasets larger than single-machine memory
+- **Cloud integration**: AWS/GCP/Azure deployment for elastic compute
+
+#### Advanced Risk Management
+Institutional-grade risk controls:
+- **Value at Risk (VaR)**: Daily VaR limits and monitoring
+- **Stress testing**: Scenario analysis and Monte Carlo simulation
+- **Correlation stress**: Portfolio behavior under correlation breakdown
+- **Regulatory compliance**: Pattern day trader rules, wash sale detection
+
+### 6.4 Implementation Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Data pipeline (fetch/normalize/store) | ✅ Complete | Rust core + Python sources |
+| Backtesting engine | ✅ Complete | Strategies, execution, metrics |
+| Risk constraints | ✅ Complete | Position size, leverage limits |
+| Run management | ✅ Complete | Storage, checkpoints, resume |
+| Multi-strategy comparison | ✅ Complete | Parallel runs, rankings |
+| Position sizing strategies | ✅ Complete | 6 sizing algorithms |
+| Advanced metrics | ✅ Complete | Sortino, win rate, expectancy |
+| Live/paper trading | 🔲 Planned | Next priority |
+| Strategy optimization | 🔲 Planned | Grid search first |
+| Event-driven architecture | 🔲 Planned | For real-time data |
+| Portfolio allocation | 🔲 Planned | After live trading |
+| ML/RL integration | 🔲 Planned | Gym environment |
+
+These extensions can be layered on top of the current architecture as the project evolves, maintaining backward compatibility with existing strategies and configurations.
 
 ## 7. Interaction Model and Interfaces
 

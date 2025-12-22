@@ -331,13 +331,26 @@ def cmd_run_training(args: argparse.Namespace) -> int:
         if result.equity_history
         else config.account_starting_balance
     )
+    m = result.metrics
     print(f"Final Equity:    ${final_equity:,.2f}")
-    print(f"Total Return:    {result.metrics.total_return:+.2%}")
-    print(f"Max Drawdown:    {result.metrics.max_drawdown:.2%}")
-    print(f"Volatility:      {result.metrics.volatility:.4f}")
-    if result.metrics.sharpe_ratio is not None:
-        print(f"Sharpe Ratio:    {result.metrics.sharpe_ratio:.2f}")
-    print(f"Num Trades:      {result.metrics.num_trades}")
+    print(f"Total Return:    {m.total_return:+.2%}")
+    print(f"Max Drawdown:    {m.max_drawdown:.2%}")
+    print(f"Volatility:      {m.volatility:.4f}")
+    if m.sharpe_ratio is not None:
+        print(f"Sharpe Ratio:    {m.sharpe_ratio:.2f}")
+    if m.sortino_ratio is not None:
+        print(f"Sortino Ratio:   {m.sortino_ratio:.2f}")
+    print(f"Num Trades:      {m.num_trades}")
+    if m.win_rate is not None:
+        print(f"Win Rate:        {m.win_rate:.1%}")
+    if m.avg_win is not None:
+        print(f"Avg Win:         ${m.avg_win:,.2f}")
+    if m.avg_loss is not None:
+        print(f"Avg Loss:        ${m.avg_loss:,.2f}")
+    if m.profit_factor is not None:
+        print(f"Profit Factor:   {m.profit_factor:.2f}")
+    if m.expectancy is not None:
+        print(f"Expectancy:      ${m.expectancy:,.2f}")
 
     # Store results
     if not args.no_save:
@@ -449,7 +462,25 @@ def cmd_inspect_run(args: argparse.Namespace) -> int:
         sharpe = metrics.get("sharpe_ratio")
         if sharpe is not None:
             print(f"   Sharpe Ratio:  {sharpe:.2f}")
+        sortino = metrics.get("sortino_ratio")
+        if sortino is not None:
+            print(f"   Sortino Ratio: {sortino:.2f}")
         print(f"   Num Trades:    {metrics.get('num_trades', 0)}")
+        win_rate = metrics.get("win_rate")
+        if win_rate is not None:
+            print(f"   Win Rate:      {win_rate:.1%}")
+        avg_win = metrics.get("avg_win")
+        if avg_win is not None:
+            print(f"   Avg Win:       ${avg_win:,.2f}")
+        avg_loss = metrics.get("avg_loss")
+        if avg_loss is not None:
+            print(f"   Avg Loss:      ${avg_loss:,.2f}")
+        profit_factor = metrics.get("profit_factor")
+        if profit_factor is not None:
+            print(f"   Profit Factor: {profit_factor:.2f}")
+        expectancy = metrics.get("expectancy")
+        if expectancy is not None:
+            print(f"   Expectancy:    ${expectancy:,.2f}")
 
     # Show config
     config = data.get("config", {})
@@ -579,6 +610,147 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_paper_trade(args: argparse.Namespace) -> int:
+    """Handle paper trading commands."""
+    import json
+
+    from trading._core import (
+        delete_paper_account,
+        list_paper_accounts,
+        load_paper_account,
+        load_paper_orders,
+        paper_account_exists,
+    )
+
+    if args.paper_command is None:
+        print("Usage: trading paper-trade <start|status|history|delete>")
+        return 1
+
+    if args.paper_command == "start":
+        from trading.paper import PaperTradingEngine
+        from trading.paper.engine import PaperTradingConfig
+        from trading.strategies import (
+            BuyAndHoldStrategy,
+            MovingAverageCrossoverStrategy,
+            RSIStrategy,
+        )
+
+        symbols = [s.strip() for s in args.symbols.split(",")]
+
+        # Create strategy
+        if args.strategy == "buy_hold":
+            strategy = BuyAndHoldStrategy({"symbol": symbols[0], "quantity": 10})
+        elif args.strategy == "ma_crossover":
+            strategy = MovingAverageCrossoverStrategy({"symbol": symbols[0]})
+        elif args.strategy == "rsi":
+            strategy = RSIStrategy({"symbol": symbols[0]})
+        else:
+            print(f"Unknown strategy: {args.strategy}")
+            return 1
+
+        config = PaperTradingConfig(
+            account_id=args.account_id,
+            symbols=symbols,
+            initial_balance=args.balance,
+            tick_interval=args.interval,
+            only_market_hours=not args.after_hours,
+        )
+
+        engine = PaperTradingEngine(config, strategy)
+        engine.run()
+        return 0
+
+    elif args.paper_command == "status":
+        if args.account_id is None:
+            # List all accounts
+            accounts = list_paper_accounts()
+            if not accounts:
+                print("No paper trading accounts found.")
+                return 0
+
+            print("=" * 60)
+            print("PAPER TRADING ACCOUNTS")
+            print("=" * 60)
+            print(f"{'Account ID':<30} {'Balance':>15} {'Positions':>10}")
+            print("-" * 60)
+
+            for account_id in accounts:
+                account_json = load_paper_account(account_id)
+                if account_json:
+                    account = json.loads(account_json)
+                    balance = account.get("cleared_balance", 0)
+                    num_pos = len(account.get("positions", {}))
+                    print(f"{account_id:<30} ${balance:>14,.2f} {num_pos:>10}")
+
+            return 0
+
+        # Show specific account
+        if not paper_account_exists(args.account_id):
+            print(f"Account not found: {args.account_id}")
+            return 1
+
+        account_json = load_paper_account(args.account_id)
+        account = json.loads(account_json)
+
+        print("=" * 60)
+        print(f"PAPER ACCOUNT: {args.account_id}")
+        print("=" * 60)
+        print(f"Cleared Balance:  ${account.get('cleared_balance', 0):,.2f}")
+        print(f"Pending Balance:  ${account.get('pending_balance', 0):,.2f}")
+
+        positions = account.get("positions", {})
+        if positions:
+            print("\n📊 POSITIONS")
+            for sym, pos in positions.items():
+                qty = pos.get("quantity", 0)
+                cost = pos.get("cost_basis", 0)
+                print(f"   {sym}: {qty:.0f} shares @ ${cost:.2f}")
+        else:
+            print("\n   No open positions")
+
+        return 0
+
+    elif args.paper_command == "history":
+        if not paper_account_exists(args.account_id):
+            print(f"Account not found: {args.account_id}")
+            return 1
+
+        orders = load_paper_orders(args.account_id)
+        if not orders:
+            print("No orders found.")
+            return 0
+
+        print("=" * 70)
+        print(f"ORDER HISTORY: {args.account_id}")
+        print("=" * 70)
+        print(f"{'Timestamp':<20} {'Side':>6} {'Qty':>8} {'Symbol':<8} {'Price':>10}")
+        print("-" * 70)
+
+        # Show most recent orders
+        for order_json in orders[-args.limit:]:
+            order = json.loads(order_json)
+            ts = order.get("timestamp", "")[:19]
+            side = order.get("side", "").upper()
+            qty = order.get("quantity", 0)
+            sym = order.get("symbol", "")
+            price = order.get("price", 0)
+            print(f"{ts:<20} {side:>6} {qty:>8.0f} {sym:<8} ${price:>9.2f}")
+
+        print(f"\nTotal orders: {len(orders)}")
+        return 0
+
+    elif args.paper_command == "delete":
+        if not paper_account_exists(args.account_id):
+            print(f"Account not found: {args.account_id}")
+            return 1
+
+        delete_paper_account(args.account_id)
+        print(f"✅ Deleted account: {args.account_id}")
+        return 0
+
+    return 0
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -690,6 +862,51 @@ def main() -> int:
         "--show-trades", action="store_true", help="Show trade history"
     )
 
+    # Paper trading commands
+    paper_parser = subparsers.add_parser(
+        "paper-trade", help="Paper trading with live market data"
+    )
+    paper_subparsers = paper_parser.add_subparsers(dest="paper_command")
+
+    # paper-trade start
+    paper_start = paper_subparsers.add_parser("start", help="Start paper trading")
+    paper_start.add_argument("account_id", help="Account identifier")
+    paper_start.add_argument(
+        "-s", "--symbols", required=True, help="Comma-separated symbols (e.g., AAPL,GOOGL)"
+    )
+    paper_start.add_argument(
+        "--strategy",
+        default="buy_hold",
+        choices=["buy_hold", "ma_crossover", "rsi"],
+        help="Strategy to use",
+    )
+    paper_start.add_argument(
+        "-b", "--balance", type=float, default=10000.0, help="Initial balance"
+    )
+    paper_start.add_argument(
+        "-i", "--interval", type=float, default=60.0, help="Tick interval in seconds"
+    )
+    paper_start.add_argument(
+        "--after-hours", action="store_true", help="Trade outside market hours"
+    )
+
+    # paper-trade status
+    paper_status = paper_subparsers.add_parser("status", help="Show paper account status")
+    paper_status.add_argument(
+        "account_id", nargs="?", default=None, help="Account ID (omit to list all)"
+    )
+
+    # paper-trade history
+    paper_history = paper_subparsers.add_parser("history", help="Show order history")
+    paper_history.add_argument("account_id", help="Account identifier")
+    paper_history.add_argument(
+        "-n", "--limit", type=int, default=20, help="Number of orders to show"
+    )
+
+    # paper-trade delete
+    paper_delete = paper_subparsers.add_parser("delete", help="Delete a paper account")
+    paper_delete.add_argument("account_id", help="Account identifier")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -706,6 +923,8 @@ def main() -> int:
         return cmd_run_training(args)
     elif args.command == "inspect-run":
         return cmd_inspect_run(args)
+    elif args.command == "paper-trade":
+        return cmd_paper_trade(args)
 
     return 0
 
