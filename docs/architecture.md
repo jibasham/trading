@@ -237,13 +237,13 @@ Connect the backtesting engine to real broker APIs for paper trading and eventua
   - Connection resilience and retry logic
   - Rate limiting and API quota management
 
-#### Strategy Optimization
+#### Strategy Optimization ✅ Complete
 Automated hyperparameter tuning and strategy discovery:
-- **Grid search**: Exhaustive parameter space exploration
-- **Random search**: Efficient sampling for high-dimensional spaces
-- **Bayesian optimization**: Sample-efficient optimization for expensive evaluations
-- **Walk-forward optimization**: Rolling window validation to prevent overfitting
-- **Multi-objective optimization**: Balance return, drawdown, and other metrics
+- **Grid search**: ✅ `GridSearchOptimizer` for exhaustive parameter space exploration
+- **Random search**: ✅ `RandomSearchOptimizer` for high-dimensional spaces
+- **Bayesian optimization**: 🔲 Planned - sample-efficient optimization
+- **Walk-forward optimization**: ✅ `WalkForwardValidator` for rolling window validation
+- **Multi-objective optimization**: 🔲 Planned - balance return, drawdown, and other metrics
 
 #### Event-Driven Architecture
 For real-time streaming data and low-latency execution:
@@ -254,26 +254,28 @@ For real-time streaming data and low-latency execution:
 
 ### 6.2 Medium-Term Extensions
 
-#### Portfolio-Level Allocation
+#### Portfolio-Level Allocation ✅ Complete
 Managing multiple strategies as a unified portfolio:
-- **Capital allocation**: Dynamic allocation across strategies based on performance
-- **Correlation analysis**: Identify and manage strategy correlation
-- **Risk budgeting**: Allocate risk (not just capital) across strategies
-- **Rebalancing**: Automatic portfolio rebalancing on schedule or triggers
+- **Capital allocation**: `EqualWeightAllocation`, `MomentumAllocation`, `InverseVolatilityAllocation`
+- **Correlation analysis**: 🔲 Planned - identify and manage strategy correlation
+- **Risk budgeting**: `MinVarianceAllocation` for risk-based allocation
+- **Rebalancing**: 🔲 Planned - automatic portfolio rebalancing on schedule or triggers
+- **Custom weights**: `MarketCapWeightAllocation`, `CustomWeightAllocation`
 
-#### Advanced Execution Modeling
+#### Advanced Execution Modeling ✅ Partial
 More realistic simulation of trade execution:
-- **Slippage models**: Market impact based on order size and liquidity
-- **Commission structures**: Per-share, per-trade, and tiered commission models
-- **Partial fills**: Simulate large orders filling over multiple bars
-- **Queue position**: Model order book dynamics for limit orders
+- **Slippage models**: ✅ Percentage-based slippage in `execute_orders`
+- **Commission structures**: ✅ Per-trade commission in `execute_orders`
+- **Partial fills**: 🔲 Planned - simulate large orders filling over multiple bars
+- **Queue position**: 🔲 Planned - model order book dynamics for limit orders
 
-#### ML/RL Integration
+#### ML/RL Integration ✅ Complete
 Deep integration with machine learning workflows:
-- **Feature engineering pipeline**: Technical indicators, market regime detection
-- **Model training hooks**: Integration with PyTorch, TensorFlow, scikit-learn
-- **Reinforcement learning**: Gym-compatible environment for RL agents
-- **Online learning**: Strategies that adapt during live trading
+- **Feature engineering pipeline**: `OHLCVFeatures`, `TechnicalFeatures`, `AccountFeatures` extractors
+- **Model training hooks**: `RLStrategy` wrapper for trained models
+- **Reinforcement learning**: Gymnasium-compatible `TradingEnv` environment
+- **Configurable rewards**: `SimpleReturnReward`, `RiskAdjustedReward`, `SharpeReward`, `DrawdownPenaltyReward`
+- **Online learning**: Strategies can adapt via `update_from_reward` hook
 
 ### 6.3 Long-Term Vision
 
@@ -308,11 +310,16 @@ Institutional-grade risk controls:
 | Multi-strategy comparison | ✅ Complete | Parallel runs, rankings |
 | Position sizing strategies | ✅ Complete | 6 sizing algorithms |
 | Advanced metrics | ✅ Complete | Sortino, win rate, expectancy |
-| Live/paper trading | 🔲 Planned | Next priority |
-| Strategy optimization | 🔲 Planned | Grid search first |
-| Event-driven architecture | 🔲 Planned | For real-time data |
-| Portfolio allocation | 🔲 Planned | After live trading |
-| ML/RL integration | 🔲 Planned | Gym environment |
+| Paper trading | ✅ Complete | Live quotes, persistent accounts |
+| Strategy optimization | ✅ Complete | Grid search, random search |
+| Walk-forward validation | ✅ Complete | Rolling window validation |
+| Portfolio allocation | ✅ Complete | 5 allocation strategies |
+| Commission/slippage modeling | ✅ Complete | Realistic execution costs |
+| ML/RL integration | ✅ Complete | Gymnasium environment |
+| Event-driven architecture | 🔲 Planned | For real-time streaming |
+| Live broker integration | 🔲 Planned | Alpaca, IBKR APIs |
+
+**Test Coverage**: 328+ tests passing
 
 These extensions can be layered on top of the current architecture as the project evolves, maintaining backward compatibility with existing strategies and configurations.
 

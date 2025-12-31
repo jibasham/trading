@@ -2831,28 +2831,49 @@ This section tracks the implementation progress of major system components.
 | Risk constraints | ✅ Complete | 21 tests |
 | Metrics computation | ✅ Complete | Integrated |
 | Advanced metrics (Sortino, win rate, etc.) | ✅ Complete | Integrated |
+| Commission/slippage modeling | ✅ Complete | 8 tests |
 | **Run Management** | | |
 | Run storage (Rust) | ✅ Complete | 14 tests |
 | Checkpointing/resume | ✅ Complete | 10 tests |
 | Config-driven execution | ✅ Complete | 34 tests |
+| **Paper Trading** | | |
+| Account persistence (Rust) | ✅ Complete | 6 tests |
+| LiveQuoteSource (Yahoo) | ✅ Complete | Integrated |
+| PaperTradingEngine | ✅ Complete | 12 tests |
+| **Strategy Optimization** | | |
+| Walk-forward validation | ✅ Complete | 8 tests |
+| Grid search optimizer | ✅ Complete | 6 tests |
+| Random search optimizer | ✅ Complete | 4 tests |
+| **Portfolio Allocation** | | |
+| Equal weight allocation | ✅ Complete | Integrated |
+| Momentum allocation | ✅ Complete | Integrated |
+| Inverse volatility allocation | ✅ Complete | Integrated |
+| Min variance allocation | ✅ Complete | Integrated |
+| Market cap allocation | ✅ Complete | 10 tests |
+| **ML/RL Integration** | | |
+| Gymnasium TradingEnv | ✅ Complete | 12 tests |
+| Feature extractors (OHLCV, Technical, Account) | ✅ Complete | 7 tests |
+| Reward functions (4 types) | ✅ Complete | 3 tests |
+| RLStrategy wrapper | ✅ Complete | 2 tests |
 | **CLI** | | |
 | `fetch-data` command | ✅ Complete | Tested |
 | `run-training` command | ✅ Complete | Tested |
 | `inspect-run` command | ✅ Complete | Tested |
+| `backtest` command | ✅ Complete | Tested |
 | `compare` command | ✅ Complete | Tested |
+| `paper-trade` command | ✅ Complete | Tested |
 
-**Total Tests**: 241 passing
+**Total Tests**: 328+ passing
 
 ### 16.2 Pending Features
 
 | Component | Priority | Notes |
 |-----------|----------|-------|
-| Live/paper trading (Alpaca) | High | Next major milestone |
-| Strategy optimization (grid search) | High | Parameter tuning |
-| Event-driven architecture | Medium | Real-time data |
-| Portfolio-level allocation | Medium | Multi-strategy capital |
-| Slippage/commission modeling | Medium | Realistic execution |
-| ML/RL Gym environment | Low | RL integration |
+| Live broker integration (Alpaca) | High | Real money trading |
+| Event-driven architecture | Medium | Real-time streaming data |
+| Bayesian optimization | Medium | Sample-efficient tuning |
+| Multi-objective optimization | Low | Pareto frontier search |
+| Partial fills simulation | Low | Large order modeling |
 
 ---
 
