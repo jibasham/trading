@@ -188,3 +188,4 @@ class MockQuoteSource(QuoteSource):
         return self._market_open
 
 
+
